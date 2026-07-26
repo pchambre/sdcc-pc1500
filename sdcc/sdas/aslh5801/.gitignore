@@ -1,0 +1,8 @@
+obj/
+objlink/
+sdaslh5801
+sdld
+*.o
+*.rel
+*.lst
+*.sym
