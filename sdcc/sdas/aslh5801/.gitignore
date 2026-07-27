@@ -1,5 +1,6 @@
 obj/
 objlink/
+Makefile
 sdaslh5801
 sdld
 *.o

@@ -2559,6 +2559,13 @@ glue (void)
         fprintf (asmFile, "\tjp\t#__sdcc_program_startup\n");
       else if(TARGET_PDK_LIKE)
         fprintf (asmFile, "\tgoto\t__sdcc_program_startup\n");
+      else if (TARGET_IS_LH5801)
+        /* Dead code for us: lh5801_genInitStartup() already jumps straight
+           to _main itself. This block still has to assemble, though --
+           JMP (absolute), not BCH (short relative), since the target lives
+           in a different area (HOME) and aslh5801 rejects cross-area BCH
+           targets. */
+        fprintf (asmFile, "\tjmp\t__sdcc_program_startup\n");
       else
         fprintf (asmFile, "\t%cjmp\t__sdcc_program_startup\n", options.acall_ajmp ? 'a' : 'l');
     }
@@ -2584,6 +2591,9 @@ glue (void)
         fprintf (asmFile, "\tjp\t#_main\n");
       else if(TARGET_PDK_LIKE)
         fprintf (asmFile, "\tgoto\t_main\n");
+      else if (TARGET_IS_LH5801)
+        /* Dead code for us -- see the __sdcc_program_startup branch above. */
+        fprintf (asmFile, "\tsjp\t_main\n");
       else
         {
           if (IFFUNC_ISNORETURN (mainf->type))

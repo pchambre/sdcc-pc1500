@@ -24,15 +24,12 @@
 /* XXX */
 #undef EXEC_PREFIX
 
-/* Define to 1 if you have the 'backtrace_symbols_fd' function. */
+/* Define to 1 if you have the `backtrace_symbols_fd' function. */
 #undef HAVE_BACKTRACE_SYMBOLS_FD
 
 /* Define to 1 if you have the <boost/graph/adjacency_list.hpp> header file.
    */
 #undef HAVE_BOOST_GRAPH_ADJACENCY_LIST_HPP
-
-/* define if the compiler supports basic C++11 syntax */
-#undef HAVE_CXX11
 
 /* Define to 1 if you have the <endian.h> header file. */
 #undef HAVE_ENDIAN_H
@@ -43,16 +40,16 @@
 /* Define to 1 if you have the <inttypes.h> header file. */
 #undef HAVE_INTTYPES_H
 
-/* Define to 1 if you have the 'gc' library (-lgc). */
+/* Define to 1 if you have the `gc' library (-lgc). */
 #undef HAVE_LIBGC
 
 /* Define to 1 if you have the <machine/endian.h> header file. */
 #undef HAVE_MACHINE_ENDIAN_H
 
-/* Define to 1 if you have the 'mkstemp' function. */
+/* Define to 1 if you have the `mkstemp' function. */
 #undef HAVE_MKSTEMP
 
-/* Define to 1 if you have the 'setrlimit' function. */
+/* Define to 1 if you have the `setrlimit' function. */
 #undef HAVE_SETRLIMIT
 
 /* Define to 1 if you have the <stdint.h> header file. */
@@ -70,7 +67,7 @@
 /* Define to 1 if you have the <string.h> header file. */
 #undef HAVE_STRING_H
 
-/* Define to 1 if you have the 'strndup' function. */
+/* Define to 1 if you have the `strndup' function. */
 #undef HAVE_STRNDUP
 
 /* Define to 1 if you have the <sys/endian.h> header file. */
@@ -132,6 +129,9 @@
 
 /* XXX */
 #undef OPT_DISABLE_HC08
+
+/* XXX */
+#undef OPT_DISABLE_LH5801
 
 /* XXX */
 #undef OPT_DISABLE_MCS51
@@ -277,22 +277,7 @@
 /* XXX */
 #undef SDCC_VERSION_STR
 
-/* The size of 'char', as computed by sizeof. */
-#undef SIZEOF_CHAR
-
-/* The size of 'int', as computed by sizeof. */
-#undef SIZEOF_INT
-
-/* The size of 'long', as computed by sizeof. */
-#undef SIZEOF_LONG
-
-/* The size of 'long long', as computed by sizeof. */
-#undef SIZEOF_LONG_LONG
-
-/* The size of 'short', as computed by sizeof. */
-#undef SIZEOF_SHORT
-
-/* Define to 1 if all of the C89 standard headers exist (not just the ones
+/* Define to 1 if all of the C90 standard headers exist (not just the ones
    required in a freestanding environment). This macro is provided for
    backward compatibility; new code need not use it. */
 #undef STDC_HEADERS
@@ -315,30 +300,6 @@
 /* XXX */
 #undef STD_LONG_LIB
 
-/* XXX */
-#undef TYPE_BYTE
-
-/* XXX */
-#undef TYPE_DWORD
-
-/* XXX */
-#undef TYPE_QWORD
-
-/* XXX */
-#undef TYPE_UBYTE
-
-/* XXX */
-#undef TYPE_UDWORD
-
-/* XXX */
-#undef TYPE_UQWORD
-
-/* XXX */
-#undef TYPE_UWORD
-
-/* XXX */
-#undef TYPE_WORD
-
 /* Define WORDS_BIGENDIAN to 1 if your processor stores words with the most
    significant byte first (like Motorola and SPARC, unlike Intel). */
 #if defined AC_APPLE_UNIVERSAL_BUILD
@@ -349,12 +310,6 @@
 # ifndef WORDS_BIGENDIAN
 #  undef WORDS_BIGENDIAN
 # endif
-#endif
-
-/* Define to 1 if type 'char' is unsigned and your compiler does not
-   predefine this macro.  */
-#ifndef __CHAR_UNSIGNED__
-# undef __CHAR_UNSIGNED__
 #endif
 
 #endif /* SDCCCONF_HEADER */

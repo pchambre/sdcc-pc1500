@@ -741,6 +741,7 @@ AC_DO_PORT(pic16,    pic16,  PIC16,    [Excludes the PIC16 port])
 AC_DO_PORT(hc08,     hc08,   HC08,     [Excludes the HC08 port])
 AC_DO_PORT(s08,      hc08,   S08,      [Excludes the S08 port])
 AC_DO_PORT(stm8,     stm8,   STM8,     [Excludes the STM8 port])
+AC_DO_PORT(lh5801,   lh5801, LH5801,   [Excludes the LH5801 port])
 AC_DO_PORT(pdk13,    pdk,    PDK13,    [Excludes the PDK13 port])
 AC_DO_PORT(pdk14,    pdk,    PDK14,    [Excludes the PDK14 port])
 AC_DO_PORT(pdk15,    pdk,    PDK15,    [Excludes the PDK15 port])
@@ -886,6 +887,11 @@ if test $OPT_DISABLE_STM8 = 0; then
                    sdas/asstm8/Makefile])
   test $OPT_DISABLE_DEVICE_LIB = 0 && AC_CONFIG_FILES([device/lib/stm8/Makefile
                                                        device/lib/stm8-large/Makefile])
+fi
+
+if test $OPT_DISABLE_LH5801 = 0; then
+  AC_CONFIG_FILES([src/lh5801/Makefile
+                   sdas/aslh5801/Makefile])
 fi
 
 if test $OPT_DISABLE_PDK13 = 0 || test $OPT_DISABLE_PDK14 = 0 || test $OPT_DISABLE_PDK15 = 0 || test $OPT_DISABLE_PDK16 = 0; then
