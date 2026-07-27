@@ -1,0 +1,16 @@
+VPATH        = @srcdir@
+srcdir       = @srcdir@
+top_builddir = @top_builddir@
+top_srcdir   = @top_srcdir@
+
+# Make all in this directory
+include $(srcdir)/../port.mk
+
+# End-to-end smoke test (compile -> assemble -> link) -- see
+# test_smoke.py's own header comment. Needs sdcc/sdaslh5801/sdld already
+# built, which "all" above (via the top-level build) takes care of.
+check-lh5801-smoke:
+	SDCC=$(top_builddir)/bin/sdcc \
+	ASLH5801=$(top_builddir)/bin/sdaslh5801 \
+	SDLD=$(top_builddir)/bin/sdld \
+	python3 $(srcdir)/test_smoke.py

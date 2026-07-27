@@ -18,7 +18,8 @@ import sys
 import os
 import tempfile
 
-ASSEMBLER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sdaslh5801")
+ASSEMBLER = os.environ.get(
+    "ASLH5801", os.path.join(os.path.dirname(os.path.abspath(__file__)), "sdaslh5801"))
 
 # (asm operand line, expected hex bytes as a string like "02" or "A3 12 34")
 CASES = [

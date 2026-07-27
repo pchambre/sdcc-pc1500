@@ -37,8 +37,8 @@ import sys
 import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-ASSEMBLER = os.path.join(HERE, "sdaslh5801")
-LINKER = os.path.join(HERE, "sdld")
+ASSEMBLER = os.environ.get("ASLH5801", os.path.join(HERE, "sdaslh5801"))
+LINKER = os.environ.get("SDLD", os.path.join(HERE, "sdld"))
 LINK_TEST_DIR = os.path.join(HERE, "link_test")
 
 # Expected final linked Intel-hex record (single 0x11=17-byte block at 0x4000)

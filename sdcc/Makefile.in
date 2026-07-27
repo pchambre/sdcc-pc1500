@@ -38,6 +38,16 @@ SDCC_AS        += sdas/asstm8
 SDCC_LD        += sdcc-ldstm8
 endif
 
+ifeq ($(OPT_DISABLE_LH5801), 0)
+SDCC_AS        += sdas/aslh5801
+# lh5801 uses the plain, generic sdld binary (see src/lh5801/main.c's
+# _linkCmd) -- no dedicated "sdldlh5801" copy exists, so this just needs to
+# trigger the base $(ASLINK) build. sdcc-ld8051 does exactly that
+# (sdas/linksrc/Makefile.in: "sdcc-ld8051: checkconf $(ASLINK)") regardless
+# of whether the mcs51 port itself is enabled.
+SDCC_LD        += sdcc-ld8051
+endif
+
 ifneq ($(OPT_DISABLE_DS390)$(OPT_DISABLE_DS400), 11)
 SDCC_AS        += sdas/as8xcxxx
 endif
