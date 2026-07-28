@@ -57,6 +57,9 @@
 #elif defined(__SDCC_f8) || defined(__SDCC_f8l)
 #include <asm/f8/features.h>
 
+#elif defined(__SDCC_lh5801)
+#include <asm/lh5801/features.h>
+
 #else
 /* PENDING */
 #include <asm/default/features.h>
