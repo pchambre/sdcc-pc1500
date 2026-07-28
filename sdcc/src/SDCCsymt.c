@@ -5148,7 +5148,20 @@ initCSupport (void)
           dbuf_init (&dbuf, 128);
           dbuf_printf (&dbuf, "_%s%s%s", smuldivmod[muldivmod], ssu[su], sbwd[bwd]);
           muldiv[muldivmod][bwd][su] = funcOfType2 (_mangleFunctionName (dbuf_c_str (&dbuf)),
-            multypes[((TARGET_IS_PIC16 || TARGET_IS_PIC14 || TARGET_IS_STM8 || TARGET_Z80_LIKE || TARGET_PDK_LIKE || TARGET_MOS6502_LIKE || TARGET_F8_LIKE) && bwd == 0) ? 1 : bwd][(bool)su],
+            /* TARGET_IS_LH5801 added here: without it, this registers
+               "_muluchar" (etc.) as returning a plain "unsigned char" --
+               conflicting with device/lib/_muluchar.c's actual "unsigned
+               int" return type (confirmed directly: compiling that file
+               standalone for lh5801 without this fix produced error 98,
+               "conflict with previous declaration ... from type
+               unsigned-char function(...) to type unsigned-int
+               function(...)"). LH5801 has no multiply instruction at all
+               (lh5801_hasNativeMulFor() always returns false, main.c),
+               so it belongs with the other no-native-multiply byte-
+               oriented targets already in this list, sign/zero-extending
+               to int and calling mulint() instead of a dedicated 8-bit
+               routine. */
+            multypes[((TARGET_IS_PIC16 || TARGET_IS_PIC14 || TARGET_IS_STM8 || TARGET_Z80_LIKE || TARGET_PDK_LIKE || TARGET_MOS6502_LIKE || TARGET_F8_LIKE || TARGET_IS_LH5801) && bwd == 0) ? 1 : bwd][(bool)su],
               multypes[bwd][su % 2],
               multypes[bwd][su == 1 || su == 2],
               options.intlong_rent);

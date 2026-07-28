@@ -1,6 +1,8 @@
 /*-------------------------------------------------------------------------
   main.c - LH5801 specific definitions.
 
+  Paul Chambre, 2026
+
   This program is free software; you can redistribute it and/or modify it
   under the terms of the GNU General Public License as published by the
   Free Software Foundation; either version 2, or (at your option) any
@@ -34,6 +36,20 @@ lh5801_setDefaultOptions (void)
      documented phase-1 simplification, not an oversight. */
   options.stackAuto = 0;
   options.noRegParams = 1;
+
+  /* Without this, a `register`-qualified local (confirmed via
+     `register unsigned char c = ...` in device/lib/printf_large.c, which
+     printf's own internal helpers use) routes through allocLocal()'s
+     S_REGISTER branch (SDCCmem.c) to the generic `overlay` memory
+     segment -- a call-tree-based memory-reuse scheme for ports with a
+     real register allocator to decide when it's safe, which we never
+     configured (nor would benefit from: phase 1 spills everything
+     unconditionally, so there's nothing to "instead of register"
+     overlay). The result was a NULL output storage class and a FATAL
+     "Failed to allocate symbol to memory segment" ICE the moment any
+     source used `register` at all. This forces S_REGISTER through the
+     exact same plain "data" segment path as every other spilt local. */
+  options.noOverlay = 1;
 
   /* Both arbitrary addresses within the bare PC-1500's built-in 2K RAM
      (4000H-47FFH), clear of the 4000H-40C4H reserve area that's live
@@ -145,7 +161,24 @@ lh5801_genInitStartup (FILE *of)
   fprintf (of, "\tbch\t__sdcc_lh5801_forever\n");
 }
 
+/* isTargetKeyword() (SDCCglue.c) returns false for every __-prefixed
+   keyword when this array is empty -- including "reentrant" -- so the
+   lexer silently falls back to treating "__reentrant" as a plain
+   identifier (SDCC.lex's TKEYWORD macro) instead of the REENTRANT token,
+   producing a generic syntax error wherever it's used. Needed for real
+   function-pointer calls with arguments to work at all: SDCC's frontend
+   requires a function type be reentrant before allowing it to be called
+   indirectly with any arguments (see the E_NONRENT_ARGS check in
+   SDCCsymt.c) -- e.g. printf's own internal pfn_outputchar callback
+   (device/lib/printf_large.c) needs this. Note this is independent of
+   the _REENTRANT *macro* being defined empty for this port in
+   asm/lh5801/features.h -- that's a separate, still-necessary workaround
+   for a real SDCC.y grammar gap (REENTRANT isn't a valid production on a
+   typedef'd declarator, only on direct function declarations/
+   definitions); this array only affects the literal __reentrant/
+   reentrant keyword being recognized when C source uses it directly. */
 static char *lh5801_keywords[] = {
+  "reentrant",
   NULL
 };
 
@@ -283,7 +316,18 @@ PORT lh5801_port =
      2,                         /* call_overhead: SJP pushes a 2-byte return address */
      0,                         /* reent_overhead */
      0,                         /* banked_overhead -- no banking */
-     0,                         /* offset -- unused while stackAuto = 0 */
+     1,                         /* offset: our S register always points at
+                                    the next FREE byte, never the last one
+                                    pushed (push8() in pc1500emu's CPU core
+                                    writes at the current S, then
+                                    decrements) -- confirmed empirically
+                                    against a real compiled reentrant call.
+                                    Not read by any shared SDCC code (grep
+                                    confirms the only consumer is a verbose
+                                    debug-dump function in SDCCmem.c) -- this
+                                    port's own gen.c hardcodes the same "+1"
+                                    directly rather than reading this field,
+                                    so it's documentation only. */
   },
   {
     -1,                         /* shift: not implemented yet, but claim
@@ -326,7 +370,7 @@ PORT lh5801_port =
   0,                            /* getRegByName */
   NULL,                         /* rtrackUpdate */
   lh5801_keywords,
-  NULL,                         /* genAssemblerStart */
+  genLH5801AssemblerStart,
   NULL,                         /* genAssemblerEnd */
   lh5801_genIVT,
   0,                            /* genXINIT -- inlined into genInitStartup instead */
@@ -355,7 +399,28 @@ PORT lh5801_port =
   GPOINTER,                     /* unqualified pointers are "generic" */
   false,                        /* no __far */
   false,                        /* no __far */
-  1,                            /* reset labelKey to 1 */
+  /* MUST be 0, not 1: resetting labelKey per function only works if the
+     *assembler* resolves "NNNNN$"-style numbered local labels (SDCCasm.c's
+     "!tlabel"/"!tlabeldef" -- labelKey2num() is just key+100, no per-
+     function salt at all) to whichever same-numbered definition is
+     nearest the referencing branch, not to a single, file-wide symbol.
+     aslh5801 does no such thing -- confirmed directly: no "$" handling
+     anywhere in aslex.c or assym.c (the shared asxxxx-family lexer/
+     symbol-table code aslh5801 is built from), so it treats "00103$" as
+     one ordinary, file-global symbol name like any other. With
+     reset_labelKey=1, two *different*, unrelated functions can and did
+     each define their own "00103$" (confirmed directly in
+     device/lib/printf_large.c's compiled output -- two real, distinct
+     "00103$:" definitions in one file), and a branch landing between them
+     resolves against whichever one the assembler's ordinary global
+     symbol lookup happens to find, not the intended nearest one --
+     producing exactly the "undefined symbol"/"branches must target a
+     symbol in the same area" assembler errors that blocked
+     printf_large.c from assembling. Setting this to 0 keeps labelKey
+     monotonically increasing across the whole compilation instead, so
+     every rendered label is genuinely, globally unique -- correct for an
+     assembler with no local-label scoping at all. */
+  0,                            /* do NOT reset labelKey per function */
   1,                            /* globals & local statics allowed */
   2,                            /* num_regs -- unused (no tree-decomposition
                                     allocator in phase 1), matches lh5801_regs[] */
