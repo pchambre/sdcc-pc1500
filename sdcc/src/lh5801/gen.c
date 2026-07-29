@@ -696,6 +696,55 @@ genAssign (const iCode *ic)
 }
 
 /*-----------------------------------------------------------------*/
+/* genPointerSet - generate code for a POINTER_SET '=' iCode, i.e.  */
+/* "*ptr = value" / "arr[k] = value" once the address has already   */
+/* been computed into IC_RESULT -- the write-side mirror of         */
+/* genGetValueAtAddress() below.                                    */
+/*                                                                   */
+/* Without this, genLH5801Code()'s '=' case fell through to plain   */
+/* genAssign() for POINTER_SET iCodes too, which treats IC_RESULT's  */
+/* own aop as the direct destination -- i.e. it clobbered the        */
+/* computed POINTER variable itself with the value instead of        */
+/* storing through it, silently leaving the real target (e.g. every  */
+/* constant-index array-element write, such as printf_large.c's      */
+/* "value.byte[4] = 0;") untouched. Confirmed via a minimal           */
+/* "arr[4] = 0xAA;" repro: the old codegen emitted two "sta" straight */
+/* into the address temp and never touched X or _arr at all.          */
+/*-----------------------------------------------------------------*/
+static void
+genPointerSet (const iCode *ic)
+{
+  operand *result = IC_RESULT (ic);
+  operand *right = IC_RIGHT (ic);
+  int size, i;
+  char buf[128];
+
+  aopOp (right);
+  aopOp (result);
+
+  wassertl (result->aop->size == 2, "lh5801: pointer dereference requires a 2-byte pointer");
+
+  size = right->aop->size;
+
+  dirAddr (buf, sizeof (buf), result->aop, 1);  /* low byte */
+  emitcode ("lda", "(%s)", buf);
+  emitcode ("sta", "xl");
+
+  dirAddr (buf, sizeof (buf), result->aop, 0);  /* high byte */
+  emitcode ("lda", "(%s)", buf);
+  emitcode ("sta", "xh");
+
+  for (i = 0; i < size; i++)
+    {
+      loadByteToA (right->aop, i, size);
+      emitcode ("sin", "x");
+    }
+
+  freeAsmop (right);
+  freeAsmop (result);
+}
+
+/*-----------------------------------------------------------------*/
 /* genAddSub - generate code for '+' and '-'                       */
 /*                                                                   */
 /* Byte-by-byte, LSB first (byte size-1, matching this port's       */
@@ -1354,7 +1403,10 @@ genLH5801Code (iCode *lic)
           genGoto (ic);
           break;
         case '=':
-          genAssign (ic);
+          if (POINTER_SET (ic))
+            genPointerSet (ic);
+          else
+            genAssign (ic);
           break;
         case IPUSH:
           genIpush (ic);
