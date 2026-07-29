@@ -151,23 +151,32 @@ loadByteToA (const asmop *aop, int offset, int size)
 void
 genLH5801AssemblerStart (FILE *of)
 {
-  int i;
-
   fprintf (of, "\t.area DATA\n");
   fprintf (of, "__lh5801_cmp_scratch:\n");
   fprintf (of, "\t.ds 1\n");
   fprintf (of, "__lh5801_frame_ptr:\n");
   fprintf (of, "\t.ds 2\n");
-  /* Fixed pass-through storage for return-value bytes beyond the first
-     two (which keep using A/X exactly as before) -- see genReturn()'s
-     and genCall()'s own comments for why this, and not a hidden-pointer
-     parameter, is the right fix here. 6 more bytes (8 total) matches
-     hc08's own cap (src/hc08/gen.c's hc08_aop_pass[]) -- generous enough
-     for float/long (4) and even long long (8) while staying a small,
-     fixed, one-time declaration in keeping with phase-1's philosophy. */
-  for (i = 2; i < 8; i++)
-    fprintf (of, "__lh5801_ret%d:\n\t.ds 1\n", i);
   fprintf (of, "\t.area CODE\n");
+
+  /* Return-value bytes beyond the first two (which keep using A/X) pass
+     through __lh5801_ret2.._ret7 -- see genReturn()'s/genCall()'s own
+     comments for why this, and not a hidden-pointer parameter, is the
+     right fix, and device/lib/lh5801/_lh5801_ret.asm's comment for why
+     their *storage* is declared there (a real, dedicated, always-linked
+     module -- matching hc08/s08's own device/lib/{hc08,s08}/_ret.c
+     precedent for the identical problem) rather than emitted here: a
+     plain per-module .area DATA declaration here, like
+     __lh5801_cmp_scratch/__lh5801_frame_ptr above, would give every
+     compiled module its own private, unshared byte -- fine for those
+     two (always written then immediately read within one function's
+     own generated code) but wrong here, where the whole point is
+     carrying a value from a callee's module to a different caller's
+     module. Confirmed both ways: a plain .area DATA declaration here
+     silently returned garbage for every byte beyond the first two
+     across a real cross-module call, and .area OSEG (this toolchain's
+     usual same-address-overlay mechanism) doesn't help either --
+     sdld's "Multiple definition" check applies before OSEG's placement
+     logic ever gets a say (see sdas/linksrc/lksym.c's newsym()). */
 }
 
 /*-----------------------------------------------------------------*/
@@ -359,8 +368,17 @@ genReturn (const iCode *ic)
       freeAsmop (left);
     }
 
+  /* JMP (absolute, unlimited range), not BCH (8-bit relative branch) --
+     confirmed necessary compiling a real, longer function
+     (device/lib/_ulong2fs.c): an early "return" well before the
+     function's end can be arbitrarily far from the shared epilogue this
+     jumps to, and BCH silently has the exact same range limit genIfx()
+     already has to route around for conditional branches
+     (emitLongCondBranch()) -- unlike that case, this jump is already
+     unconditional, so there's no inverted-condition trick needed, just
+     a plain absolute jump. */
   if (!(ic->next && ic->next->op == LABEL && IC_LABEL (ic->next) == returnLabel))
-    emitcode ("bch", "!tlabel", labelKey2num (returnLabel->key));
+    emitcode ("jmp", "!tlabel", labelKey2num (returnLabel->key));
 }
 
 /*-----------------------------------------------------------------*/
