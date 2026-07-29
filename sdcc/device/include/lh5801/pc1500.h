@@ -78,4 +78,70 @@ extern void idleTick(void);
    tested yet. */
 extern void tapeSendChar(unsigned char c);
 
+/* --- PC-1500 native numeric type and math library --------------------
+   The ROM's own 8-byte floating-point format (confirmed both from the
+   PC-2 Assembly Language manual and empirically, byte-for-byte, against
+   real ROM1.BIN this session):
+
+     byte 0: exponent, signed 8-bit two's complement, power of 10
+     byte 1: mantissa sign (0x00 = +, 0x80 = -)
+     bytes 2-6: mantissa, packed BCD, 2 digits/byte, normalized as a
+                single digit before the decimal point (d.ddddddddd,
+                10 significant digits)
+     byte 7: always 0x00
+
+   None of these ROM addresses are documented SBRxx vector-table entries
+   -- they're plain internal addresses, same caveat as tapeSendChar's.
+   Every routine here only works correctly on data actually stored at
+   fixed RAM addresses (0x7A00, and 0x7A10 for a second operand) --
+   confirmed directly that pointing at an arbitrary caller buffer does
+   NOT work -- so every wrapper below copies its pc1500_float_t
+   argument(s) in before calling the ROM routine and copies the
+   (possibly modified) result back out afterward. See
+   pc1500_fp_helpers.asm for that shared copy-in/copy-out logic. */
+typedef unsigned char pc1500_float_t[8];
+
+/* Captured from the ROM's own UH error-code register immediately after
+   every call below (confirmed: divide by zero leaves a nonzero code
+   there). Only "zero == no error" is confirmed; individual nonzero
+   values aren't otherwise decoded yet. */
+extern unsigned char pc1500Error(void);
+
+/* string <-> native format, via the ROM's own STR$ (device/lib/lh5801/
+   pc1500_float_to_str.asm). There is no matching pc1500StrToFloat(): the
+   ROM's VAL routine (0xD9D7) does not behave as a simple isolated
+   callable routine the way STR$ does (confirmed: it writes a scratch
+   byte immediately *before* its input pointer and returns almost
+   instantly regardless of input, suggesting it expects to be entered
+   from within the tokenizer/expression-evaluator's own state, like the
+   file-name routines this session already declined to wrap for the
+   same reason) -- not attempted further. */
+extern void pc1500FloatToStr(const pc1500_float_t v, char *out);
+
+/* Two-operand arithmetic, in place: a is both an input and the result. */
+extern void pc1500Add(pc1500_float_t a, const pc1500_float_t b); /* a += b */
+extern void pc1500Sub(pc1500_float_t a, const pc1500_float_t b); /* a -= b (no direct ROM
+                                                                     subtract was found; implemented
+                                                                     as negate-then-add) */
+extern void pc1500Mul(pc1500_float_t a, const pc1500_float_t b); /* a *= b */
+extern void pc1500Div(pc1500_float_t a, const pc1500_float_t b); /* a /= b */
+
+/* Single-operand math, in place -- all confirmed against the real ROM
+   this session, all sharing the identical calling convention. */
+extern void pc1500Sqrt(pc1500_float_t v);
+extern void pc1500Sin(pc1500_float_t v);
+extern void pc1500Cos(pc1500_float_t v);
+extern void pc1500Tan(pc1500_float_t v);
+extern void pc1500Log(pc1500_float_t v);  /* base 10 */
+extern void pc1500Ln(pc1500_float_t v);   /* natural log */
+extern void pc1500Exp(pc1500_float_t v);
+extern void pc1500Atn(pc1500_float_t v);
+extern void pc1500Asn(pc1500_float_t v);
+extern void pc1500Acs(pc1500_float_t v);
+extern void pc1500Abs(pc1500_float_t v);
+extern void pc1500Int(pc1500_float_t v);
+extern void pc1500Sgn(pc1500_float_t v);
+extern void pc1500Deg(pc1500_float_t v);
+extern void pc1500Dms(pc1500_float_t v);
+
 #endif /* __PC1500_H */
