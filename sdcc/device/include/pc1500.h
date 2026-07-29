@@ -63,4 +63,19 @@ extern unsigned char onKeyPressed(void);
    just 3 raw CPU instructions -- nothing here duplicates ROM code. */
 extern void idleTick(void);
 
+/* --- CE-150 cassette tape send (device/lib/lh5801/tape_send_char.asm) -
+   VMJ 0xA8 (SBRA8) -- unlike every other function in this header, this
+   one's target lives inside a *plug-in module's* ROM (0x8000-0xBFFF,
+   selected by the CPU's PU/PV flip-flops), not the base system ROM --
+   it only works with a CE-150 (or possibly CE-158) module actually
+   present and selected. See pc1500emu's Bus::RomModule for how to load
+   one. Confirmed by direct emulation: sends the byte's low nibble as
+   (0xF0 | nibble), then its high nibble the same way, then a fixed
+   (0xF0),(0xF0) trailer. There is no matching tapeReadChar() -- the
+   real ROM routine for that (VMJ 0xA4) is a pulse-width timing loop
+   against the cassette input line, which pc1500emu doesn't model at
+   all (no simulated tape signal), so it can't be usefully wrapped or
+   tested yet. */
+extern void tapeSendChar(unsigned char c);
+
 #endif /* __PC1500_H */
