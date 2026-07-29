@@ -151,11 +151,22 @@ loadByteToA (const asmop *aop, int offset, int size)
 void
 genLH5801AssemblerStart (FILE *of)
 {
+  int i;
+
   fprintf (of, "\t.area DATA\n");
   fprintf (of, "__lh5801_cmp_scratch:\n");
   fprintf (of, "\t.ds 1\n");
   fprintf (of, "__lh5801_frame_ptr:\n");
   fprintf (of, "\t.ds 2\n");
+  /* Fixed pass-through storage for return-value bytes beyond the first
+     two (which keep using A/X exactly as before) -- see genReturn()'s
+     and genCall()'s own comments for why this, and not a hidden-pointer
+     parameter, is the right fix here. 6 more bytes (8 total) matches
+     hc08's own cap (src/hc08/gen.c's hc08_aop_pass[]) -- generous enough
+     for float/long (4) and even long long (8) while staying a small,
+     fixed, one-time declaration in keeping with phase-1's philosophy. */
+  for (i = 2; i < 8; i++)
+    fprintf (of, "__lh5801_ret%d:\n\t.ds 1\n", i);
   fprintf (of, "\t.area CODE\n");
 }
 
@@ -291,8 +302,8 @@ genReturn (const iCode *ic)
     {
       aopOp (left);
 
-      wassertl (left->aop->size <= 2,
-        "lh5801: phase-1 backend only supports 0-, 1-, or 2-byte return values");
+      wassertl (left->aop->size <= 8,
+        "lh5801: phase-1 backend only supports 0- to 8-byte return values");
 
       if (left->aop->size == 1)
         {
@@ -301,12 +312,16 @@ genReturn (const iCode *ic)
           else
             emitcode ("lda", "(%s)", left->aop->u.dir);
         }
-      else if (left->aop->size == 2)
+      else if (left->aop->size >= 2)
         {
+          /* Bytes 0-1 always go through X, exactly as before (size==2's
+             sole case, historically) -- bytes 2+ (only possible when
+             size > 2) go through the fixed __lh5801_retN pass-through
+             locations declared once in genLH5801AssemblerStart(). */
           if (left->aop->type == AOP_LIT)
             {
-              emitcode ("ldi", "xh, 0x%02x", litByte (left->aop, 0, 2));
-              emitcode ("ldi", "xl, 0x%02x", litByte (left->aop, 1, 2));
+              emitcode ("ldi", "xh, 0x%02x", litByte (left->aop, 0, left->aop->size));
+              emitcode ("ldi", "xl, 0x%02x", litByte (left->aop, 1, left->aop->size));
             }
           else
             {
@@ -319,6 +334,25 @@ genReturn (const iCode *ic)
               dirAddr (buf, sizeof (buf), left->aop, 1);
               emitcode ("lda", "(%s)", buf);
               emitcode ("sta", "xl");
+            }
+
+          if (left->aop->size > 2)
+            {
+              int i;
+
+              for (i = 2; i < left->aop->size; i++)
+                {
+                  if (left->aop->type == AOP_LIT)
+                    emitcode ("ldi", "a, 0x%02x", litByte (left->aop, i, left->aop->size));
+                  else
+                    {
+                      char buf[128];
+
+                      dirAddr (buf, sizeof (buf), left->aop, i);
+                      emitcode ("lda", "(%s)", buf);
+                    }
+                  emitcode ("sta", "(__lh5801_ret%d)", i);
+                }
             }
         }
 
@@ -641,16 +675,18 @@ genCall (const iCode *ic)
       aopOp (result);
       size = result->aop->size;
 
-      wassertl (size <= 2,
-        "lh5801: phase-1 backend only supports 0-, 1-, or 2-byte call results");
+      wassertl (size <= 8,
+        "lh5801: phase-1 backend only supports 0- to 8-byte call results");
 
       /* Matches genReturn()'s return-value convention: 1 byte in A,
-         2 bytes in X (XH = most-significant byte). */
+         2 bytes in X (XH = most-significant byte), any further bytes in
+         the fixed __lh5801_retN pass-through locations. */
       if (size == 1)
         emitcode ("sta", "(%s)", result->aop->u.dir);
-      else if (size == 2)
+      else if (size >= 2)
         {
           char buf[128];
+          int i;
 
           emitcode ("lda", "xh");
           dirAddr (buf, sizeof (buf), result->aop, 0);
@@ -659,6 +695,13 @@ genCall (const iCode *ic)
           emitcode ("lda", "xl");
           dirAddr (buf, sizeof (buf), result->aop, 1);
           emitcode ("sta", "(%s)", buf);
+
+          for (i = 2; i < size; i++)
+            {
+              emitcode ("lda", "(__lh5801_ret%d)", i);
+              dirAddr (buf, sizeof (buf), result->aop, i);
+              emitcode ("sta", "(%s)", buf);
+            }
         }
 
       freeAsmop (result);
