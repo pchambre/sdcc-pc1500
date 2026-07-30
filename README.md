@@ -60,14 +60,19 @@ small changes too:
   `asm/lh5801/features.h`, and adding `__SDCC_lh5801` to the target list
   that gets the generic `va_list`-as-`unsigned char*` varargs
   implementation (needed for `printf`-family functions to compile at all).
-- **`device/include/stdbit.h`** — a genuine, previously-latent bug fix, not
-  just registration: `__STDC_ENDIAN_NATIVE__` only special-cased
-  `hc08`/`s08`/`stm8` as big-endian, defaulting every other port (LH5801
-  included) to little-endian. This backend is unambiguously big-endian
-  (byte 0 = most significant byte, throughout), and portable library code
-  that branches on this macro to pick a byte-order-dependent union layout
-  (e.g. `device/lib/_mullong.c`'s multiply) silently computed wrong answers
-  without it.
+- **`device/include/stdbit.h`** — like most SDCC targets, the LH5801 CPU
+  has no wide load/store instructions that force a byte order on multi-byte
+  values (it moves one byte at a time); the storage convention is entirely
+  the backend's own choice. This backend consistently chose big-endian
+  (byte 0 = most significant byte). `__STDC_ENDIAN_NATIVE__` only
+  special-cased `hc08`/`s08`/`stm8` — genuinely big-endian CPUs — as
+  big-endian, defaulting every other port, LH5801 included, to little-endian
+  regardless of what that port actually does. Left unset, portable library
+  code that branches on this macro to pick a byte-order-dependent union
+  layout (e.g. `device/lib/_mullong.c`'s multiply) silently computed wrong
+  answers for this port. Declaring it here is this fork registering its own
+  design choice, the same way every other change in this list registers
+  something about the new target — not a defect in upstream SDCC.
 
 Everything else — the LH5801 code generator, the `sdaslh5801` assembler,
 the PC-1500 runtime library, and the build-system wiring every new port
