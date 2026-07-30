@@ -705,36 +705,57 @@ genCall (const iCode *ic)
   if (IC_RESULT (ic))
     {
       operand *result = IC_RESULT (ic);
-      int size;
+      sym_link *funcType;
+      int resultSize, calleeSize, skip, i;
 
       aopOp (result);
-      size = result->aop->size;
+      resultSize = result->aop->size;
 
-      wassertl (size <= 8,
+      /* The callee always returns according to ITS OWN declared type's
+         width (genReturn()'s convention: 1 byte in A, 2 in X, more in
+         __lh5801_retN), regardless of how many bytes IC_RESULT itself
+         keeps -- e.g. `narrowField += wideFunc();`-style truncation
+         narrows IC_RESULT's own operand size without changing what the
+         callee actually does. Reading based on IC_RESULT's (possibly
+         narrower) size instead of the real callee return width misreads
+         a genuinely-2-byte-or-wider return as if it were 1 byte,
+         silently picking up whatever garbage is left in A instead of
+         the real value in X -- confirmed the hard way bringing up
+         device/lib/_mullong.c's `t.b.b3 += bcast(a)->b.b3 *
+         bcast(b)->b.b0;` (an unsigned-int-returning __muluchar() call
+         truncated into a 1-byte struct field). Fixed by always reading
+         the full callee-width sequence, keeping only its trailing
+         (least-significant, per this port's big-endian byte order)
+         resultSize bytes -- matching C's own truncation-keeps-low-
+         -order-bits semantics. */
+      if (ic->op == PCALL)
+        funcType = operandType (IC_LEFT (ic))->next->next;
+      else
+        funcType = OP_SYMBOL (IC_LEFT (ic))->type->next;
+      calleeSize = IS_VOID (funcType) ? 0 : getSize (funcType);
+
+      wassertl (calleeSize <= 8,
         "lh5801: phase-1 backend only supports 0- to 8-byte call results");
+      wassertl (resultSize <= calleeSize,
+        "lh5801: call result operand wider than the callee's own return type");
 
-      /* Matches genReturn()'s return-value convention: 1 byte in A,
-         2 bytes in X (XH = most-significant byte), any further bytes in
-         the fixed __lh5801_retN pass-through locations. */
-      if (size == 1)
-        emitcode ("sta", "(%s)", result->aop->u.dir);
-      else if (size >= 2)
+      skip = calleeSize - resultSize;
+
+      for (i = 0; i < calleeSize; i++)
         {
-          char buf[128];
-          int i;
+          if (i == 0 && calleeSize > 1)
+            emitcode ("lda", "xh");
+          else if (i == 1)
+            emitcode ("lda", "xl");
+          else if (i >= 2)
+            emitcode ("lda", "(__lh5801_ret%d)", i);
+          /* i == 0 && calleeSize == 1: already sitting in A, no load needed. */
 
-          emitcode ("lda", "xh");
-          dirAddr (buf, sizeof (buf), result->aop, 0);
-          emitcode ("sta", "(%s)", buf);
-
-          emitcode ("lda", "xl");
-          dirAddr (buf, sizeof (buf), result->aop, 1);
-          emitcode ("sta", "(%s)", buf);
-
-          for (i = 2; i < size; i++)
+          if (i >= skip)
             {
-              emitcode ("lda", "(__lh5801_ret%d)", i);
-              dirAddr (buf, sizeof (buf), result->aop, i);
+              char buf[128];
+
+              dirAddr (buf, sizeof (buf), result->aop, i - skip);
               emitcode ("sta", "(%s)", buf);
             }
         }
@@ -751,22 +772,54 @@ genAssign (const iCode *ic)
 {
   operand *result = IC_RESULT (ic);
   operand *right = IC_RIGHT (ic);
-  int size;
-  int i;
+  int resultSize, rightSize, i;
+  char buf[128];
 
   aopOp (right);
   aopOp (result);
 
-  size = result->aop->size;
+  resultSize = result->aop->size;
+  rightSize = right->aop->size;
 
-  for (i = 0; i < size; i++)
+  /* A plain '=' can itself be narrowing or widening, not just same-size
+     -- e.g. `char sign = SIGN(a) ^ SIGN(b);` narrowing a 4-byte
+     (unsigned long) XOR result into a 1-byte destination (confirmed via
+     device/lib/_fsmul.c's own such line). Unlike an explicit CAST
+     (genCast() above, which already gets this right), plain assignment
+     used to assume same-size always and just copy destSize bytes
+     starting from right's OWN byte 0 -- silently keeping the *leading*
+     (most-significant) bytes of a wider source instead of C's actual
+     truncation semantics (keep the *trailing*, least-significant bytes,
+     per this port's big-endian byte order). Mirrors genCast()'s exact
+     algorithm since the needed behavior is identical either way. */
+  if (resultSize <= rightSize)
     {
-      char buf[128];
+      int srcOffset = rightSize - resultSize;
 
-      loadByteToA (right->aop, i, size);
+      for (i = 0; i < resultSize; i++)
+        {
+          loadByteToA (right->aop, srcOffset + i, rightSize);
+          dirAddr (buf, sizeof (buf), result->aop, i);
+          emitcode ("sta", "(%s)", buf);
+        }
+    }
+  else
+    {
+      int extra = resultSize - rightSize;
 
-      dirAddr (buf, sizeof (buf), result->aop, i);
-      emitcode ("sta", "(%s)", buf);
+      for (i = 0; i < extra; i++)
+        {
+          emitcode ("ldi", "a, 0x00");
+          dirAddr (buf, sizeof (buf), result->aop, i);
+          emitcode ("sta", "(%s)", buf);
+        }
+
+      for (i = 0; i < rightSize; i++)
+        {
+          loadByteToA (right->aop, i, rightSize);
+          dirAddr (buf, sizeof (buf), result->aop, extra + i);
+          emitcode ("sta", "(%s)", buf);
+        }
     }
 
   freeAsmop (right);
