@@ -53,12 +53,17 @@ EXPECTED_IHX = [
     ":08421000AA47FFBE42409E02D6",
     ":03423000BA42008F",
     ":03420000BE42407B",
-    ":06424000B501AE46009A34",
+    ":06424000B501AE46079A2D",
 ]
 
+# _P1 sits at DATA+7, not DATA+0: genLH5801AssemblerStart() reserves 7
+# bytes of per-module scratch ahead of any real user DATA variable
+# (__lh5801_cmp_scratch/_frame_ptr/_shift_scratch/_cmp_result_msb/
+# _cmp_signA/_cmp_signed_lt -- see gen.c's own comment there for why
+# each one is declared unconditionally up front rather than lazily).
 EXPECTED_SYMBOLS = {
     "_main": 0x4240,
-    "_P1": 0x4600,
+    "_P1": 0x4607,
 }
 
 

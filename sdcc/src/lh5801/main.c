@@ -182,9 +182,24 @@ static char *lh5801_keywords[] = {
   NULL
 };
 
+/* $2 (the assembler's output object filename, honoring -o) must be
+   passed explicitly -- sdas's "outfile file1 [file2...]" usage form
+   (confirmed via sdaslh5801 -h) takes it as a bare positional argument
+   before the input file, exactly like every other sdas-based port here
+   (hc08/mcs51's own _asmCmd). Omitting it (as this array used to)
+   isn't a hard failure: sdas still runs, still emits a `.lst`, and
+   still exits 0 -- it just silently never writes a `.rel` at all,
+   because "-o" (or this positional form) is genuinely optional to
+   sdas itself, only conditionally required to get an object file out.
+   That made `sdcc -mlh5801 -c foo.c` silently produce no object file
+   whenever the file compiled clean, only surfacing as a mysterious
+   "undefined symbol" pile-up from sdld on some *unrelated* dependent
+   file downstream -- confirmed directly bringing up device/lib/_muluchar.c,
+   which compiles standalone with zero external references and so hit
+   this with no error at all, anywhere, ever. */
 static const char *_asmCmd[] =
 {
-  "sdaslh5801", "$l", "$3", "\"$1.asm\"", NULL
+  "sdaslh5801", "$l", "$3", "$2", "$1.asm", NULL
 };
 
 /* sdld is a single generic, port-agnostic linker shared by every sdas
@@ -231,8 +246,25 @@ PORT lh5801_port =
   {                             /* Assembler */
     _asmCmd,
     NULL,
-    "-l",                       /* Options with debug */
-    "-l",                       /* Options without debug */
+    /* "o" and "g" both matter here, matching every other sdas-based
+       port's own combined options string (see e.g. hc08/main.c's
+       "-plosgffwy"/"-plosgffw", which bundles the very same letters):
+       "o" is what actually makes sdas honor the $2 positional output
+       filename above and write a .rel at all -- confirmed the hard way,
+       since sdas happily exits 0 and writes a .lst with neither "o" nor
+       an explicit "-o" flag, silently producing no object file whatsoever.
+       "g" (undefined symbols made global) is separately needed because a
+       compiled module's references to symbols defined in some *other*
+       module (any real multi-file program, not just this port's own
+       phase-1 cross-module return-value plumbing) are, from a single
+       module's own assembly pass, indistinguishable from a genuine typo
+       -- sdas refuses to assemble either without being told to treat
+       them as external rather than erroring. Confirmed missing both this
+       whole session's worth of manual `sdaslh5801 -glos ...` workarounds
+       whenever hand-assembling anything beyond a single self-contained
+       file. */
+    "-glo",                     /* Options with debug */
+    "-glo",                     /* Options without debug */
     0,
     ".asm",
     NULL,                       /* do_assemble */
