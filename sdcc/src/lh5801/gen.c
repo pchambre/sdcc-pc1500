@@ -156,6 +156,23 @@ genLH5801AssemblerStart (FILE *of)
   fprintf (of, "\t.ds 1\n");
   fprintf (of, "__lh5801_frame_ptr:\n");
   fprintf (of, "\t.ds 2\n");
+  /* genShift()'s runtime (non-constant) shift-count loop counter --
+     same per-module intra-function-only scratch category as
+     __lh5801_cmp_scratch above (written and consumed entirely within
+     one function's own generated code, never carried across a call
+     boundary), so a plain per-module byte is correct here, unlike
+     __lh5801_ret2.._ret7's genuinely cross-module storage in
+     device/lib/lh5801/_lh5801_ret.asm. */
+  fprintf (of, "__lh5801_shift_scratch:\n");
+  fprintf (of, "\t.ds 1\n");
+  /* genCmp()'s signed-comparison bookkeeping -- same per-module
+     intra-function-only scratch category as the bytes above. */
+  fprintf (of, "__lh5801_cmp_result_msb:\n");
+  fprintf (of, "\t.ds 1\n");
+  fprintf (of, "__lh5801_cmp_signA:\n");
+  fprintf (of, "\t.ds 1\n");
+  fprintf (of, "__lh5801_cmp_signed_lt:\n");
+  fprintf (of, "\t.ds 1\n");
   fprintf (of, "\t.area CODE\n");
 
   /* Return-value bytes beyond the first two (which keep using A/X) pass
@@ -891,16 +908,6 @@ genAddSub (const iCode *ic, bool isSub)
 /*-----------------------------------------------------------------*/
 /* genCmp - generate code for '>' '<' LE_OP GE_OP EQ_OP NE_OP       */
 /*                                                                   */
-/* Phase-1 simplification: always compares as if unsigned, even for */
-/* signed operand types -- the LH5801 has no sign/negative flag at   */
-/* all (confirmed against pc1500emu's Flags struct: only c/v/z/h),   */
-/* so the usual "N xor V" signed-comparison trick isn't directly     */
-/* available, and implementing it via manual top-bit extraction      */
-/* isn't done yet. Correct for same-sign operands (the overwhelming  */
-/* common case, including everything printf_large.c's own comparisons */
-/* need -- they're all unsigned char/long), wrong for e.g. comparing */
-/* a negative int against a positive one.                            */
-/*                                                                   */
 /* Method: subtract byte-by-byte LSB-first via the same chainable    */
 /* SBC/SBI carry-chain genAddSub() uses (discarding the arithmetic   */
 /* result -- only the flags matter), while separately OR-accumulating */
@@ -911,7 +918,30 @@ genAddSub (const iCode *ic, bool isSub)
 /* only affect Z, not C (confirmed against pc1500emu's opcode         */
 /* implementations), so interleaving the two doesn't corrupt either. */
 /* After the loop: C=1 means left>=right (unsigned, no borrow); the  */
-/* scratch byte is 0 iff left==right.                                */
+/* scratch byte is 0 iff left==right (true regardless of signedness  */
+/* -- equality doesn't care about sign interpretation).              */
+/*                                                                   */
+/* For an UNSIGNED comparison that's the whole story: the switch     */
+/* below decides '<'/'>='/'>'/'<=' directly from C, and '=='/'!=' from */
+/* the scratch byte's Z.                                              */
+/*                                                                    */
+/* A SIGNED comparison needs more: the LH5801 has no signed-overflow  */
+/* flag (confirmed against pc1500emu's Flags struct: only c/v/z/h,    */
+/* and v isn't the signed-arithmetic overflow flag x86/68k programmers */
+/* usually mean by that letter here), so the usual "N xor V" trick     */
+/* isn't available. Instead: capture the raw (unmasked) result byte    */
+/* from the loop's *last* (i==0, most-significant, this port's big-    */
+/* endian byte 0) iteration into __lh5801_cmp_result_msb -- its sign    */
+/* bit is the sign of (left-right) computed via ordinary wraparound     */
+/* two's-complement subtraction -- then combine with each operand's      */
+/* own sign bit using the standard overflow-free rule for signed <       */
+/* via subtraction: signed_lt = (signA != signB) ? signA : sign(result).  */
+/* (If the operands' signs differ, the negative one is smaller no matter   */
+/* the magnitudes, full stop; if they're the same sign, subtracting two     */
+/* same-signed N-bit values can't itself overflow the N-bit two's-complement */
+/* range, so the plain result's sign is reliable.) The result feeds a late    */
+/* switch mirroring the unsigned one exactly, just branching on Z flags       */
+/* against named scratch bytes instead of the C flag against hardware state.  */
 /*-----------------------------------------------------------------*/
 static void
 genCmp (const iCode *ic)
@@ -920,6 +950,7 @@ genCmp (const iCode *ic)
   operand *left = IC_LEFT (ic);
   operand *right = IC_RIGHT (ic);
   int size, i;
+  bool isSigned;
   /* newiTempLabel()/!tlabel, not a plain fixed-name label: aslh5801's
      numbered "NNNNN$" labels (which is how every *other* SDCC-emitted
      label in this function is rendered) are "reusable local symbols"
@@ -949,13 +980,26 @@ genCmp (const iCode *ic)
      byte regardless. Prefer a real (AOP_DIR) operand's size as the
      canonical width; only fall back to comparing two literals' sizes
      directly (a case the constant folder would normally have already
-     eliminated) if both sides are literal. */
+     eliminated) if both sides are literal. Signedness is read from
+     whichever side isn't a literal, for the same reason (a literal's
+     own sym_link doesn't reliably reflect the comparison's real type);
+     if both sides are literal, the constant folder would normally have
+     already eliminated the comparison, so the unsigned path is fine. */
   if (left->aop->type != AOP_LIT)
-    size = left->aop->size;
+    {
+      size = left->aop->size;
+      isSigned = !SPEC_USIGN (getSpec (operandType (left)));
+    }
   else if (right->aop->type != AOP_LIT)
-    size = right->aop->size;
+    {
+      size = right->aop->size;
+      isSigned = !SPEC_USIGN (getSpec (operandType (right)));
+    }
   else
-    size = (left->aop->size > right->aop->size) ? left->aop->size : right->aop->size;
+    {
+      size = (left->aop->size > right->aop->size) ? left->aop->size : right->aop->size;
+      isSigned = false;
+    }
 
   wassertl ((left->aop->type == AOP_LIT || left->aop->size == size) &&
             (right->aop->type == AOP_LIT || right->aop->size == size),
@@ -981,46 +1025,137 @@ genCmp (const iCode *ic)
           emitcode ("sbc", "(%s)", buf);
         }
 
+      if (isSigned && i == 0)
+        emitcode ("sta", "(__lh5801_cmp_result_msb)");
+
       emitcode ("ora", "(__lh5801_cmp_scratch)");
       emitcode ("sta", "(__lh5801_cmp_scratch)");
+    }
+
+  if (isSigned)
+    {
+      char buf[128];
+      symbol *sameSign = newiTempLabel (NULL);
+      symbol *signDone = newiTempLabel (NULL);
+
+      loadByteToA (left->aop, 0, size);
+      emitcode ("ani", "a, #0x80");
+      emitcode ("sta", "(__lh5801_cmp_signA)");
+
+      if (right->aop->type == AOP_LIT)
+        emitcode ("ldi", "a, 0x%02x", (unsigned) (litByte (right->aop, 0, size) & 0x80));
+      else
+        {
+          dirAddr (buf, sizeof (buf), right->aop, 0);
+          emitcode ("lda", "(%s)", buf);
+          emitcode ("ani", "a, #0x80");
+        }
+
+      /* Z after A-B is a reliable equality test regardless of magnitude
+         or wraparound, so this correctly detects "same sign" even
+         though the two values being compared are themselves already
+         the *result* of one subtraction each. */
+      emitcode ("sec", "");
+      emitcode ("sbc", "(__lh5801_cmp_signA)");
+      emitcode ("bzs", "!tlabel", labelKey2num (sameSign->key));
+
+      /* Signs differ: left<right (signed) iff left itself is negative. */
+      emitcode ("lda", "(__lh5801_cmp_signA)");
+      emitcode ("bch", "!tlabel", labelKey2num (signDone->key));
+
+      emitLabel (sameSign);
+      emitcode ("lda", "(__lh5801_cmp_result_msb)");
+      emitcode ("ani", "a, #0x80");
+
+      emitLabel (signDone);
+      emitcode ("sta", "(__lh5801_cmp_signed_lt)");
     }
 
   freeAsmop (left);
   freeAsmop (right);
 
-  /* C=1 (no borrow) means left>=right; Z (from the last ora/sta above)
-     means left==right. Each case below jumps to trueLabel when its
-     condition holds, falls through to "store 0" otherwise. */
-  switch (ic->op)
+  if (isSigned)
     {
-    case '<':                          /* left <  right : C=0 */
-      emitcode ("bcr", "!tlabel", labelKey2num (trueLabel->key));
-      break;
-    case GE_OP:                        /* left >= right : C=1 */
-      emitcode ("bcs", "!tlabel", labelKey2num (trueLabel->key));
-      break;
-    case EQ_OP:                        /* left == right : Z=1 */
-      emitcode ("bzs", "!tlabel", labelKey2num (trueLabel->key));
-      break;
-    case NE_OP:                        /* left != right : Z=0 */
-      emitcode ("bzr", "!tlabel", labelKey2num (trueLabel->key));
-      break;
-    case '>':                          /* left >  right : C=1 and Z=0 */
-      {
-        symbol *falseLabel = newiTempLabel (NULL);
+      /* __lh5801_cmp_signed_lt is 0x80 (nonzero) iff left<right (signed);
+         __lh5801_cmp_scratch is 0 iff left==right (sign-independent, see
+         above). Same case shapes as the unsigned switch below, just
+         driven by named-byte Z tests instead of the C flag. */
+      switch (ic->op)
+        {
+        case '<':
+          emitcode ("lda", "(__lh5801_cmp_signed_lt)");
+          emitcode ("bzr", "!tlabel", labelKey2num (trueLabel->key));
+          break;
+        case GE_OP:
+          emitcode ("lda", "(__lh5801_cmp_signed_lt)");
+          emitcode ("bzs", "!tlabel", labelKey2num (trueLabel->key));
+          break;
+        case EQ_OP:
+          emitcode ("lda", "(__lh5801_cmp_scratch)");
+          emitcode ("bzs", "!tlabel", labelKey2num (trueLabel->key));
+          break;
+        case NE_OP:
+          emitcode ("lda", "(__lh5801_cmp_scratch)");
+          emitcode ("bzr", "!tlabel", labelKey2num (trueLabel->key));
+          break;
+        case '>':
+          {
+            symbol *falseLabel = newiTempLabel (NULL);
 
-        emitcode ("bcr", "!tlabel", labelKey2num (falseLabel->key));
-        emitcode ("bzr", "!tlabel", labelKey2num (trueLabel->key));
-        emitLabel (falseLabel);
-      }
-      break;
-    case LE_OP:                        /* left <= right : C=0 or Z=1 */
-      emitcode ("bcr", "!tlabel", labelKey2num (trueLabel->key));
-      emitcode ("bzs", "!tlabel", labelKey2num (trueLabel->key));
-      break;
-    default:
-      wassertl (0, "lh5801: unrecognized comparison operator in genCmp");
-      break;
+            emitcode ("lda", "(__lh5801_cmp_signed_lt)");
+            emitcode ("bzr", "!tlabel", labelKey2num (falseLabel->key));
+            emitcode ("lda", "(__lh5801_cmp_scratch)");
+            emitcode ("bzr", "!tlabel", labelKey2num (trueLabel->key));
+            emitLabel (falseLabel);
+          }
+          break;
+        case LE_OP:
+          emitcode ("lda", "(__lh5801_cmp_signed_lt)");
+          emitcode ("bzr", "!tlabel", labelKey2num (trueLabel->key));
+          emitcode ("lda", "(__lh5801_cmp_scratch)");
+          emitcode ("bzs", "!tlabel", labelKey2num (trueLabel->key));
+          break;
+        default:
+          wassertl (0, "lh5801: unrecognized comparison operator in genCmp");
+          break;
+        }
+    }
+  else
+    {
+      /* C=1 (no borrow) means left>=right; Z (from the last ora/sta above)
+         means left==right. Each case below jumps to trueLabel when its
+         condition holds, falls through to "store 0" otherwise. */
+      switch (ic->op)
+        {
+        case '<':                          /* left <  right : C=0 */
+          emitcode ("bcr", "!tlabel", labelKey2num (trueLabel->key));
+          break;
+        case GE_OP:                        /* left >= right : C=1 */
+          emitcode ("bcs", "!tlabel", labelKey2num (trueLabel->key));
+          break;
+        case EQ_OP:                        /* left == right : Z=1 */
+          emitcode ("bzs", "!tlabel", labelKey2num (trueLabel->key));
+          break;
+        case NE_OP:                        /* left != right : Z=0 */
+          emitcode ("bzr", "!tlabel", labelKey2num (trueLabel->key));
+          break;
+        case '>':                          /* left >  right : C=1 and Z=0 */
+          {
+            symbol *falseLabel = newiTempLabel (NULL);
+
+            emitcode ("bcr", "!tlabel", labelKey2num (falseLabel->key));
+            emitcode ("bzr", "!tlabel", labelKey2num (trueLabel->key));
+            emitLabel (falseLabel);
+          }
+          break;
+        case LE_OP:                        /* left <= right : C=0 or Z=1 */
+          emitcode ("bcr", "!tlabel", labelKey2num (trueLabel->key));
+          emitcode ("bzs", "!tlabel", labelKey2num (trueLabel->key));
+          break;
+        default:
+          wassertl (0, "lh5801: unrecognized comparison operator in genCmp");
+          break;
+        }
     }
 
   emitcode ("ldi", "a, 0x00");
@@ -1176,11 +1311,16 @@ genBitwise (const iCode *ic)
 /*-----------------------------------------------------------------*/
 /* genShift - generate code for '<<' (LEFT_OP) and '>>' (RIGHT_OP) */
 /*                                                                   */
-/* Phase-1 simplification: the shift amount must be a compile-time  */
-/* constant (a variable shift amount would need a runtime counting  */
-/* loop -- not implemented, not needed by printf_large.c's own       */
-/* `n >> 4` / `b << 1`-style usage). Copies left into result, then    */
-/* does `shiftAmount` single-bit passes over every byte in place.    */
+/* Copies left into result, then does `shiftAmount` single-bit       */
+/* passes over every byte in place. A compile-time-constant shift    */
+/* amount unrolls all of those passes directly (no loop overhead,    */
+/* the original phase-1 shape, sufficient for printf_large.c's own    */
+/* `n >> 4` / `b << 1`-style usage); a runtime shift amount (needed    */
+/* by _fsadd.c's `mant1 >>= expd`, expd not known until runtime)        */
+/* instead emits ONE copy of the same single-pass body inside a         */
+/* counting loop, decrementing a shared scratch byte (loaded from the    */
+/* shift-count operand's low byte -- shift counts are never anywhere      */
+/* near 256 in any real program) down to zero.                            */
 /*                                                                   */
 /* SHL/SHR (inherent, A only) always shift in a fresh 0 bit and      */
 /* don't consume carry-in -- confirmed against pc1500emu's opcode    */
@@ -1193,15 +1333,82 @@ genBitwise (const iCode *ic)
 /* in each pass uses SHL/SHR (correctly injecting a 0 at that end),  */
 /* every subsequent byte in that same pass uses ROL/ROR (correctly    */
 /* propagating the previous byte's carry-out).                       */
+/*                                                                    */
+/* Right shifts additionally need to know whether this is a SIGNED    */
+/* shift (arithmeticRight): a plain SHR always shifts in 0 (correct    */
+/* only for unsigned/logical shifts, or a signed shift of a value       */
+/* already known non-negative); a signed shift of a negative value       */
+/* must instead shift in copies of the sign bit (arithmetic shift) to     */
+/* preserve its value's scaling -- confirmed necessary by _fsadd.c's       */
+/* `mant2 >>= expd` on a negative `long` mant2 (both-operands-negative      */
+/* addition path): using SHR there corrupted the sign into a huge            */
+/* positive value after the very first shifted-out bit. Implemented by       */
+/* seeding the carry flag from the CURRENT top bit (via an ANI #0x80 test     */
+/* and SEC/REC, reloading the byte before the actual ROR since ANI clobbers   */
+/* A) instead of the SHR that would otherwise unconditionally clear it, so     */
+/* the same ROR-propagation chain used by every other byte propagates that     */
+/* seeded bit in as bit 7 instead of a hardwired 0.                             */
 /*-----------------------------------------------------------------*/
+static void
+emitShiftPass (asmop *resultAop, int size, bool isLeft, bool arithmeticRight)
+{
+  char buf[128];
+  int i;
+
+  if (isLeft)
+    {
+      for (i = size - 1; i >= 0; i--)
+        {
+          dirAddr (buf, sizeof (buf), resultAop, i);
+          emitcode ("lda", "(%s)", buf);
+          emitcode (i == size - 1 ? "shl" : "rol", "");
+          emitcode ("sta", "(%s)", buf);
+        }
+    }
+  else if (arithmeticRight)
+    {
+      symbol *nonNegLabel = newiTempLabel (NULL);
+      symbol *seededLabel = newiTempLabel (NULL);
+
+      dirAddr (buf, sizeof (buf), resultAop, 0);
+      emitcode ("lda", "(%s)", buf);
+      emitcode ("ani", "a, #0x80");
+      emitcode ("bzs", "!tlabel", labelKey2num (nonNegLabel->key));
+      emitcode ("sec", "");
+      emitcode ("bch", "!tlabel", labelKey2num (seededLabel->key));
+      emitLabel (nonNegLabel);
+      emitcode ("rec", "");
+      emitLabel (seededLabel);
+
+      for (i = 0; i < size; i++)
+        {
+          dirAddr (buf, sizeof (buf), resultAop, i);
+          emitcode ("lda", "(%s)", buf);
+          emitcode ("ror", "");
+          emitcode ("sta", "(%s)", buf);
+        }
+    }
+  else
+    {
+      for (i = 0; i < size; i++)
+        {
+          dirAddr (buf, sizeof (buf), resultAop, i);
+          emitcode ("lda", "(%s)", buf);
+          emitcode (i == 0 ? "shr" : "ror", "");
+          emitcode ("sta", "(%s)", buf);
+        }
+    }
+}
+
 static void
 genShift (const iCode *ic, bool isLeft)
 {
   operand *result = IC_RESULT (ic);
   operand *left = IC_LEFT (ic);
   operand *right = IC_RIGHT (ic);
-  int size, i, pass, shiftAmount;
+  int size, i;
   char buf[128];
+  bool arithmeticRight;
 
   aopOp (left);
   aopOp (right);
@@ -1210,10 +1417,13 @@ genShift (const iCode *ic, bool isLeft)
   size = result->aop->size;
   wassertl (left->aop->type == AOP_LIT || left->aop->size == size,
     "lh5801: phase-1 backend requires matching operand/result sizes for shifts");
-  wassertl (right->aop->type == AOP_LIT,
-    "lh5801: phase-1 backend only supports a compile-time-constant shift amount");
 
-  shiftAmount = (int) ulFromVal (OP_VALUE (right));
+  /* A literal being shifted is constant-folded by SDCC's own frontend
+     long before this, so it's never actually the value whose sign
+     matters here in practice; treat that (theoretical) case as
+     unsigned rather than dereferencing a literal's operandType. */
+  arithmeticRight = !isLeft && left->aop->type != AOP_LIT &&
+                     !SPEC_USIGN (getSpec (operandType (left)));
 
   /* left -> result (byte copy; left and result may be the same iTemp,
      e.g. for `x <<= n`, in which case this is a no-op each byte). */
@@ -1224,28 +1434,41 @@ genShift (const iCode *ic, bool isLeft)
       emitcode ("sta", "(%s)", buf);
     }
 
-  for (pass = 0; pass < shiftAmount; pass++)
+  if (right->aop->type == AOP_LIT)
     {
-      if (isLeft)
-        {
-          for (i = size - 1; i >= 0; i--)
-            {
-              dirAddr (buf, sizeof (buf), result->aop, i);
-              emitcode ("lda", "(%s)", buf);
-              emitcode (i == size - 1 ? "shl" : "rol", "");
-              emitcode ("sta", "(%s)", buf);
-            }
-        }
-      else
-        {
-          for (i = 0; i < size; i++)
-            {
-              dirAddr (buf, sizeof (buf), result->aop, i);
-              emitcode ("lda", "(%s)", buf);
-              emitcode (i == 0 ? "shr" : "ror", "");
-              emitcode ("sta", "(%s)", buf);
-            }
-        }
+      int shiftAmount = (int) ulFromVal (OP_VALUE (right));
+      int pass;
+
+      for (pass = 0; pass < shiftAmount; pass++)
+        emitShiftPass (result->aop, size, isLeft, arithmeticRight);
+    }
+  else
+    {
+      symbol *loopStart = newiTempLabel (NULL);
+      symbol *loopEnd = newiTempLabel (NULL);
+
+      loadByteToA (right->aop, right->aop->size - 1, right->aop->size);
+      emitcode ("sta", "(__lh5801_shift_scratch)");
+
+      emitLabel (loopStart);
+      emitcode ("lda", "(__lh5801_shift_scratch)");
+      emitcode ("bzs", "!tlabel", labelKey2num (loopEnd->key));
+
+      emitShiftPass (result->aop, size, isLeft, arithmeticRight);
+
+      /* sbi subtracts *with borrow* (same convention genCmp()/genAddSub()
+         already rely on for their own chained subtractions) -- without
+         an explicit sec here, this decrement silently inherits whatever
+         stale carry emitShiftPass()'s own shr/ror chain just left behind
+         (shr/ror are rotate-through-carry, so they always leave one),
+         turning "subtract 1" into "subtract 1 or 2" depending on that
+         leftover bit and corrupting the whole loop's iteration count. */
+      emitcode ("lda", "(__lh5801_shift_scratch)");
+      emitcode ("sec", "");
+      emitcode ("sbi", "a, #0x01");
+      emitcode ("sta", "(__lh5801_shift_scratch)");
+      emitcode ("jmp", "!tlabel", labelKey2num (loopStart->key));
+      emitLabel (loopEnd);
     }
 
   freeAsmop (left);
