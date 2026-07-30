@@ -788,6 +788,15 @@ genAssign (const iCode *ic)
 /* "value.byte[4] = 0;") untouched. Confirmed via a minimal           */
 /* "arr[4] = 0xAA;" repro: the old codegen emitted two "sta" straight */
 /* into the address temp and never touched X or _arr at all.          */
+/*                                                                    */
+/* IC_RESULT (the address being stored through) can itself be a       */
+/* compile-time-constant AOP_LIT, not just a real AOP_DIR variable      */
+/* holding a pointer value -- confirmed via a minimal                   */
+/* "*(unsigned char *)0x4700 = 0x55;" repro (a fixed hardware/memory     */
+/* address, an extremely common embedded idiom -- and the same shape      */
+/* any "*(ptr + N) = v" where N and ptr are both compile-time-known         */
+/* constant-folds down to). dirAddr() assumes a real AOP_DIR symbol and      */
+/* asserts otherwise, so that case needs its own literal-immediate X load.   */
 /*-----------------------------------------------------------------*/
 static void
 genPointerSet (const iCode *ic)
@@ -804,13 +813,23 @@ genPointerSet (const iCode *ic)
 
   size = right->aop->size;
 
-  dirAddr (buf, sizeof (buf), result->aop, 1);  /* low byte */
-  emitcode ("lda", "(%s)", buf);
-  emitcode ("sta", "xl");
+  if (result->aop->type == AOP_LIT)
+    {
+      unsigned long addr = ulFromVal (OP_VALUE (result));
 
-  dirAddr (buf, sizeof (buf), result->aop, 0);  /* high byte */
-  emitcode ("lda", "(%s)", buf);
-  emitcode ("sta", "xh");
+      emitcode ("ldi", "xh, #0x%02x", (unsigned) ((addr >> 8) & 0xFF));
+      emitcode ("ldi", "xl, #0x%02x", (unsigned) (addr & 0xFF));
+    }
+  else
+    {
+      dirAddr (buf, sizeof (buf), result->aop, 1);  /* low byte */
+      emitcode ("lda", "(%s)", buf);
+      emitcode ("sta", "xl");
+
+      dirAddr (buf, sizeof (buf), result->aop, 0);  /* high byte */
+      emitcode ("lda", "(%s)", buf);
+      emitcode ("sta", "xh");
+    }
 
   for (i = 0; i < size; i++)
     {
@@ -1502,6 +1521,14 @@ genShift (const iCode *ic, bool isLeft)
 /* family) walks X across however many bytes the result needs,        */
 /* matching our big-endian layout exactly (MSB at the lowest address   */
 /* = read first).                                                      */
+/*                                                                    */
+/* left (the pointer being dereferenced) can itself be a compile-time  */
+/* AOP_LIT rather than a real AOP_DIR variable holding a pointer value   */
+/* -- same "*(unsigned char *)0x4700" fixed-address idiom as              */
+/* genPointerSet()'s own identical gap. Both the pointer and the offset    */
+/* are then fully known at compile time, so this just combines them at      */
+/* compile time into one constant and loads X directly, no runtime add       */
+/* needed at all. */
 /*-----------------------------------------------------------------*/
 static void
 genGetValueAtAddress (const iCode *ic)
@@ -1529,20 +1556,30 @@ genGetValueAtAddress (const iCode *ic)
 
   size = result->aop->size;
 
-  dirAddr (buf, sizeof (buf), left->aop, 1);  /* low byte */
-  emitcode ("lda", "(%s)", buf);
-  if (offset)
+  if (left->aop->type == AOP_LIT)
     {
-      emitcode ("rec", "");
-      emitcode ("adi", "a, #0x%02lx", offset);
-    }
-  emitcode ("sta", "xl");
+      unsigned long addr = ulFromVal (OP_VALUE (left)) + offset;
 
-  dirAddr (buf, sizeof (buf), left->aop, 0);  /* high byte */
-  emitcode ("lda", "(%s)", buf);
-  if (offset)
-    emitcode ("adi", "a, #0x00");  /* propagate the low byte's carry-out */
-  emitcode ("sta", "xh");
+      emitcode ("ldi", "xh, #0x%02x", (unsigned) ((addr >> 8) & 0xFF));
+      emitcode ("ldi", "xl, #0x%02x", (unsigned) (addr & 0xFF));
+    }
+  else
+    {
+      dirAddr (buf, sizeof (buf), left->aop, 1);  /* low byte */
+      emitcode ("lda", "(%s)", buf);
+      if (offset)
+        {
+          emitcode ("rec", "");
+          emitcode ("adi", "a, #0x%02lx", offset);
+        }
+      emitcode ("sta", "xl");
+
+      dirAddr (buf, sizeof (buf), left->aop, 0);  /* high byte */
+      emitcode ("lda", "(%s)", buf);
+      if (offset)
+        emitcode ("adi", "a, #0x00");  /* propagate the low byte's carry-out */
+      emitcode ("sta", "xh");
+    }
 
   for (i = 0; i < size; i++)
     {
