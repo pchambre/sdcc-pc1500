@@ -85,7 +85,20 @@ typedef unsigned long long int  uint_fast64_t;
 #define __STDC_ENDIAN_LITTLE__ 0
 #define __STDC_ENDIAN_BIG__ 1
 
-#if defined(__SDCC_hc08) || defined(__SDCC_s08) || defined(__SDCC_stm8)
+/* lh5801: every multi-byte value this backend's own code generator
+   (src/lh5801/gen.c) ever stores to memory -- iCode temp/local storage,
+   the wide-return-value pass-through globals, everything -- uses byte 0
+   as the MOST significant byte (confirmed via extensive direct testing
+   against pc1500emu: PARM_1's layout, __lh5801_ret2.._ret7, genAddSub's
+   carry-chain direction, genCmp's/genShift's whole-value byte ordering).
+   Portable device/lib/*.c files that branch on __STDC_ENDIAN_NATIVE__ to
+   pick a byte-order-dependent union layout for type-punning tricks (e.g.
+   _mullong.c's `union bil`) silently pick the WRONG (little-endian)
+   layout without this -- confirmed the hard way bringing up _mullong.c
+   for the float library: correct-looking generated code, wrong answers,
+   traced all the way down to this exact macro before the mismatch
+   became obvious. */
+#if defined(__SDCC_hc08) || defined(__SDCC_s08) || defined(__SDCC_stm8) || defined(__SDCC_lh5801)
 #define __STDC_ENDIAN_NATIVE__ __STDC_ENDIAN_BIG__
 #else
 #define __STDC_ENDIAN_NATIVE__ __STDC_ENDIAN_LITTLE__
