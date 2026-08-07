@@ -106,6 +106,56 @@ sdcc/support/scripts/build-lh5801.sh myprogram.c [load_address_hex]
 See the script's own header comment for details (default load address,
 output naming, and hardware caveats it warns about).
 
+### Building on Windows
+
+The full `./configure && make` build above works under WSL/MSYS2 exactly
+as on Linux and is the primary path for the compiler itself. But if you
+just need **`sdaslh5801`** and **`sdld`** (the assembler and linker,
+e.g. to drive [pc1500emu](https://github.com/pchambre/pc1500emu)'s
+debugger or its VS Code build task) as native `.exe`s without a
+WSL/MSYS2 dependency, upstream SDCC already ships hand-maintained MSVC
+project files for every `sdas`/`sdld` backend (`sdas/<target>/*.vcxproj`)
+— every one, that is, except `aslh5801`, presumably because it didn't
+exist yet when those project files were last regenerated. This fork adds
+that missing project file rather than introducing a whole second build
+system:
+
+1. **Generate `sdcc_vc.h`** (one-time; this is `sdccconf.h`'s equivalent
+   for the MSVC build — see `sdcc/.gitignore`'s comment — and needs
+   `gawk`, e.g. from a Git Bash/MSYS2 shell):
+   ```sh
+   cd sdcc
+   gawk -f configure_vc.awk sdcc_vc.h.in > sdcc_vc.h
+   ```
+2. **Build the assembler and linker** with MSBuild (adjust the MSBuild
+   path for your Visual Studio version/edition; `PlatformToolset` should
+   match one actually installed — `v143` is VS2022's):
+   ```sh
+   MSBUILD="/c/Program Files/Microsoft Visual Studio/2022/Community/MSBuild/Current/Bin/MSBuild.exe"
+   "$MSBUILD" sdas/aslh5801/aslh5801.vcxproj -p:Configuration=Release -p:Platform=Win32 -p:PlatformToolset=v143
+   "$MSBUILD" sdas/linksrc/aslink.vcxproj    -p:Configuration=Release -p:Platform=Win32 -p:PlatformToolset=v143
+   ```
+   Output lands at `sdcc/bin_vc/sdaslh5801.exe` and `sdcc/bin_vc/sdld.exe`.
+
+Two things worth knowing if you're comparing this against the other
+`sdas/*/*.vcxproj` files or trying to add a `.vcxproj` for another
+target yourself:
+- `aslh5801.vcxproj` and the fixed-up `aslink.vcxproj` deliberately don't
+  reference `config.vcxproj` (the project that generates `sdcc_vc.h` and
+  `sdas/linksrc/asxxxx_config.h` via a `gawk`-driven custom-build step)
+  the way most of the other per-target projects do. Doing that build step
+  through MSBuild needs `gawk` reachable from MSBuild's own process
+  environment, not just an interactive shell, which isn't a given on a
+  stock Windows install — and neither generated header is actually
+  `#include`d by any source file these two targets compile (confirmed by
+  grep), so the dependency was pure friction for no benefit. Generating
+  `sdcc_vc.h` by hand once, as above, covers the one header that *is*
+  real (it's directly included).
+- `aslink.vcxproj` also had a stale `lks19.c` `ClCompile` entry (that file
+  doesn't exist in this tree and isn't in `sdas/linksrc/Makefile.in`'s own
+  `SRC` list either) — removed, not replaced, since the Makefile-driven
+  build has never compiled it.
+
 ## Status
 
 Early-stage. Core language features and a real ROM-calling standard

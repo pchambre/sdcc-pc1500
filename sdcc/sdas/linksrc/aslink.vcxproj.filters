@@ -62,9 +62,6 @@
     <ClCompile Include="lkrloc.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="lks19.c">
-      <Filter>Source Files</Filter>
-    </ClCompile>
     <ClCompile Include="lksdcclib.c">
       <Filter>Source Files</Filter>
     </ClCompile>
