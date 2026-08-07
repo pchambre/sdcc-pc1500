@@ -32,3 +32,18 @@ obj/
 /src/SDCCy.h
 /support/cpp/gcc/
 /support/regression/ports/host/spec.mk
+
+# Native MSVC build (see README.md's "Building on Windows" section) --
+# sdcc_vc.h is generated from sdcc_vc.h.in the same way sdccconf.h is
+# generated from ./configure above, just via configure_vc.awk instead;
+# bin_vc/ and the per-project Debug/Release/*.tlog dirs are that build's
+# equivalent of the /bin/* and obj/ entries above.
+sdcc_vc.h
+bin_vc/
+Debug/
+Release/
+*.tlog/
+*.pdb
+*.ilk
+*.idb
+.vs/
