@@ -20,7 +20,7 @@
 #include "asxxxx.h"
 #include "lh5801.h"
 
-char	*cpu	= "Sharp/Sanyo LH5801 (Sharp PC-1500)";
+char	*cpu	= "Sharp LH5801 (Sharp PC-1500)";
 char	*dsft	= "asm";
 
 /*

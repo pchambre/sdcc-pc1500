@@ -18,7 +18,7 @@
  */
 
 /*
- * sdas port for the Sharp/Sanyo LH5801 CPU (Sharp PC-1500). Opcode/
+ * sdas port for the Sharp LH5801 CPU (Sharp PC-1500). Opcode/
  * addressing-mode facts are transposed from pc1500emu's
  * docs/lh5801_opcode_reference.md, itself cross-checked against the PC-1500
  * and PC-1600 technical reference manuals and validated against real
