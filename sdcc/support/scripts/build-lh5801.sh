@@ -1,8 +1,10 @@
 #!/bin/bash
 # build-lh5801.sh - compile a C source file for the PC-1500 (LH5801 SDCC
 # port), link it against the ROM-calling runtime library
-# (device/lib/lh5801/), and emit a padding-free flat binary ready to load
-# onto a real PC-1500 (or pc1500emu) at a fixed address.
+# (device/lib/lh5801/) plus the generic stdio support printf() needs
+# (device/lib/printf_large.c and friends, see STDIO_SOURCES below), and
+# emit a padding-free flat binary ready to load onto a real PC-1500 (or
+# pc1500emu) at a fixed address.
 #
 # Paul Chambre, 2026
 #
@@ -45,7 +47,23 @@ ASLH5801="$SDCC_ROOT/bin/sdaslh5801"
 SDLD="$SDCC_ROOT/bin/sdld"
 MAKEBIN="$SDCC_ROOT/bin/makebin"
 DEVICE_INCLUDE="$SDCC_ROOT/device/include"
+# pc1500.h itself lives in the port-specific subdirectory, not directly
+# under device/include/ -- sdcc doesn't add this automatically for -mlh5801,
+# confirmed live: compiling with only -I"$DEVICE_INCLUDE" fails with
+# "pc1500.h: No such file or directory" on the example program's own
+# #include <pc1500.h>.
+DEVICE_INCLUDE_LH5801="$SDCC_ROOT/device/include/lh5801"
 DEVICE_LIB_LH5801="$SDCC_ROOT/device/lib/lh5801"
+DEVICE_LIB="$SDCC_ROOT/device/lib"
+# Generic (non-port-specific) C-source stdio support printf() needs --
+# unlike device/lib/lh5801/*.asm, sdcc doesn't pull these in on its own,
+# and they're C source (compiled via sdcc -S, same as the user's own
+# program), not pre-existing .asm -- confirmed live: without these,
+# linking any program that calls printf() fails with "ASlink-Warning-
+# Undefined Global _printf". Linked in unconditionally for every build,
+# same as the full device/lib/lh5801 runtime already is below, whether or
+# not a given program actually calls printf.
+STDIO_SOURCES=(printf_large vprintf strlen _mulint _muluchar)
 
 DEFAULT_BASE="4400"
 EXT_RAM_START_HEX="4800"  # CE-158 extension RAM boundary -- see warning below
@@ -95,7 +113,7 @@ BASE_DEC="$(hex_to_dec "$BASE_HEX")"
 
 # --- compile + assemble the user's program -----------------------------
 cp "$SRC_ABS" "$BASENAME.c"
-"$SDCC" -S -mlh5801 -I"$DEVICE_INCLUDE" "$BASENAME.c" -o "$BASENAME.asm"
+"$SDCC" -S -mlh5801 -I"$DEVICE_INCLUDE" -I"$DEVICE_INCLUDE_LH5801" "$BASENAME.c" -o "$BASENAME.asm"
 "$ASLH5801" -logs "$BASENAME.asm" >/dev/null
 
 # --- assemble the ROM-calling runtime library ---------------------------
@@ -104,6 +122,13 @@ for asm in "$DEVICE_LIB_LH5801"/*.asm; do
   libbase="$(basename "$asm" .asm)"
   "$ASLH5801" -logs -o "$WORKDIR/$libbase.rel" "$asm" >/dev/null
   REL_ARGS+=("$libbase.rel")
+done
+
+# --- compile + assemble the stdio support printf() needs ----------------
+for stdiosrc in "${STDIO_SOURCES[@]}"; do
+  "$SDCC" -S -mlh5801 -I"$DEVICE_INCLUDE" -I"$DEVICE_INCLUDE_LH5801" "$DEVICE_LIB/$stdiosrc.c" -o "$stdiosrc.asm"
+  "$ASLH5801" -logs "$stdiosrc.asm" >/dev/null
+  REL_ARGS+=("$stdiosrc.rel")
 done
 
 # area_size <map_file> <area_name> -> hex size (0 if the area doesn't

@@ -4,16 +4,14 @@
    routines (device/lib/lh5801/lcd_putchar.asm) -- no reimplemented font,
    per the standing rule that ROM1.BIN functionality is never duplicated.
 
-   NOTE: build-lh5801.sh only links the .asm files under device/lib/
-   lh5801 -- it does not yet pull in the C-source stdio support this
-   demo needs (vprintf.c, printf_large.c, strlen.c, _mulint.c,
-   _muluchar.c). Until it does, build by hand: compile+assemble this
-   file and each of those five device/lib sources with sdcc -S -mlh5801
-   and sdaslh5801, then sdld all the resulting .rel files together (the
-   device/lib/lh5801 ones too) with CODE based right after
-   HOME+GSINIT+GSFINAL+CONST and DATA based right after CODE (see
-   build-lh5801.sh's own comment for why unbased areas can't just be
-   left to sdld's encounter-order placement).
+   Confirmed live via pc1500emu: builds and links cleanly with plain
+   `build-lh5801.sh hello_printf_lcd.c` (it pulls in the C-source stdio
+   support this needs -- vprintf.c, printf_large.c, strlen.c, _mulint.c,
+   _muluchar.c -- via its own STDIO_SOURCES list, alongside the
+   device/lib/lh5801 runtime), and the LCD genuinely renders "Hello,
+   1500!" via the ROM's own font routines. Needs the CE-158 extension RAM
+   module (or emulator Bus::setExtRam4800Size()) -- printf_large's own
+   static data pushes this build past the base 2KB (0x4000-0x47FF).
 */
 #include <stdio.h>
 #include <pc1500.h>
