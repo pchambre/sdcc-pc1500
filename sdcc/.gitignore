@@ -26,6 +26,12 @@ obj/
 *.sym
 *.map
 *.ihx
+
+# build-lh5801.sh's own output naming convention
+# (<source_basename>-<base>-<call_addr>-pc1500.bin) -- a build artifact
+# that lands next to whatever .c file was built, e.g. under
+# device/examples/lh5801/.
+*-pc1500.bin
 /src/sdcc
 /src/SDCClex.c
 /src/SDCCy.c
