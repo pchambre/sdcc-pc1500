@@ -142,8 +142,15 @@ CASES = [
     # PSH/POP
     ("psh a", "FD C8"), ("psh x", "FD 88"), ("psh y", "FD 98"), ("psh u", "FD A8"),
     ("pop a", "FD 8A"), ("pop x", "FD 0A"), ("pop y", "FD 1A"), ("pop u", "FD 2A"),
-    # LOP
-    ("lop ul,5", "88 05"),
+    # LOP: no case here -- unlike every other CASES entry, LOP's operand is
+    # a branch target (see LOOP_ASM/LOOP_EXPECTED below), not a literal
+    # immediate value. A bare-literal case ("lop ul,5" -> "88 05") used to
+    # live here, but that's indistinguishable from the bug this test
+    # suite exists to catch: a bare literal has no address of its own, so
+    # its "low byte" and "correct displacement" values can't be told
+    # apart the way LOOP_EXPECTED's label-based cases below are chosen to
+    # (deliberately, at addresses whose low byte differs from the correct
+    # displacement).
     # VCS/VCR/VMJ + conditional vector calls
     ("vcs 0xC0", "C3 C0"), ("vcr 0xC0", "C1 C0"),
     ("vmj 0xC2", "CD C2"), ("vvs 0xC2", "CF C2"), ("vzs 0xC2", "CB C2"),
@@ -179,6 +186,46 @@ BRANCH_EXPECTED = [
     ("bch p4 @1007 (self)", "9E 02"),  # target 1007, A+2=1009, diff=-2
     ("bch p1 @1009", "9E 0B"),         # target 1000, A+2=100B, diff=-0x0B
     ("bzs p2 @100B", "9B 09"),         # target 1004, A+2=100D, diff=-9
+]
+
+# LOP's own displacement math (see m5801mch.c's S_TYPLOP comment) is
+# computed the same way as S_TYPBRA's backward ("-i") form -- relative to
+# (dot+2) -- but LOP has no separate forward opcode, so it's tested
+# independently rather than folded into BRANCH_EXPECTED above. Both target
+# addresses are chosen so the correct displacement and the target
+# address's own low byte are different values: this is the regression
+# case for the bug where sdaslh5801 emitted the target label's raw low
+# byte instead of computing a displacement (harmless coincidence for a
+# target address ending in 00, which is exactly why that bug went
+# unnoticed until a real user hit it at a non-zero-low-byte address).
+LOOP_ASM = """\
+	.area CODE (ABS)
+	.org 0x1000
+loop1:
+	nop
+	nop
+	nop
+	lop ul,loop1
+"""
+LOOP_EXPECTED = [
+    ("lop ul,loop1 @1003", "88 05"),  # target 1000, A+2=1005, diff=5 (label's own low byte would be 00)
+]
+
+LOOP2_ASM = """\
+	.area CODE (ABS)
+	.org 0x1234
+loop2:
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	lop ul,loop2
+"""
+LOOP2_EXPECTED = [
+    ("lop ul,loop2 @123B", "88 09"),  # target 1234, A+2=123D, diff=9 (label's own low byte would be 34)
 ]
 
 LST_LINE_RE = re.compile(
@@ -236,6 +283,21 @@ def main():
             if norm(expected) != actual:
                 fails += 1
                 print(f"FAIL: {label}: expected [{norm(expected)}] got [{actual}] (addr={addr} src={src!r})")
+
+    for loop_asm, loop_expected in [(LOOP_ASM, LOOP_EXPECTED), (LOOP2_ASM, LOOP2_EXPECTED)]:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            lst = assemble(tmpdir, loop_asm)
+            loop_got = [(addr, norm(hexpart), src.strip())
+                        for addr, hexpart, src in LST_LINE_RE.findall(lst)
+                        if src.strip().startswith("lop")]
+            if len(loop_got) != len(loop_expected):
+                print(f"LOOP MISMATCH IN LINE COUNT: expected {len(loop_expected)}, got {len(loop_got)}")
+                sys.exit(1)
+            for (label, expected), (addr, actual, src) in zip(loop_expected, loop_got):
+                total += 1
+                if norm(expected) != actual:
+                    fails += 1
+                    print(f"FAIL: {label}: expected [{norm(expected)}] got [{actual}] (addr={addr} src={src!r})")
 
     print(f"\n{total - fails}/{total} cases passed.")
     sys.exit(1 if fails else 0)
