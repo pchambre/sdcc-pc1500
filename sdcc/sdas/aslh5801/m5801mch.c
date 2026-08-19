@@ -290,6 +290,21 @@ machine(struct mne *mp)
 		}
 		break;
 
+	/*
+	 * LOP (0x88 i): decrements UL, and if no borrow, branches to
+	 * P-i -- evaluated *after* fetching both opcode bytes (see
+	 * src/cpu/lh5801.cpp's case 0x88), i.e. relative to (dot+2), same
+	 * as the backward ("-i") half of S_TYPBRA below. Unlike those,
+	 * LOP has only the one opcode/direction (0x88 always subtracts),
+	 * so there's no forward form to choose between -- just compute the
+	 * backward displacement directly, the same way S_TYPBRA's own
+	 * "v1 < 0" branch does.
+	 *
+	 * i must previously have used outrb(&e2, 0) here, which emits the
+	 * raw low byte of e2's absolute value (i.e. the target label's own
+	 * address & 0xFF) instead of a displacement -- correct only by
+	 * coincidence when dot+2-target happened to equal that low byte.
+	 */
 	case S_TYPLOP:
 		t1 = addr(&e1);
 		if (t1 != S_UL) {
@@ -297,8 +312,27 @@ machine(struct mne *mp)
 		}
 		comma(1);
 		expr(&e2, 0);
-		outab(0x88);
-		outrb(&e2, 0);
+		/*
+		 * dot.s_addr must be read here, before outab(0x88) advances
+		 * it -- same ordering S_TYPBRA above uses (its own expr()
+		 * call, and thus its own read of dot.s_addr for v1, happens
+		 * before either of its outab() calls).
+		 */
+		if (mchpcr(&e2)) {
+			v1 = (int) (dot.s_addr + 2 - e2.e_addr);
+			outab(0x88);
+			if (v1 < 0 || v1 > 255) {
+				xerr('a', "Branching Range Exceeded.");
+			}
+			outab(v1);
+		} else {
+			outab(0x88);
+			xerr('a', "LH5801 LOP Must Target A Symbol In The Same Area (No External/Cross-Area Targets).");
+			outab(0);
+		}
+		if (e2.e_mode != S_USER) {
+			rerr();
+		}
 		break;
 
 	case S_TYPABS:
