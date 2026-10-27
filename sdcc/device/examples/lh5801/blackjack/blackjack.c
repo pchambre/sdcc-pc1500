@@ -41,6 +41,7 @@
 typedef long money;               /* half dollars */
 
 #define WENTER 0xFFFF             /* BASIC's bare WAIT: pause for ENTER */
+#define FLASH_TICKS 90            /* FOR D=1 TO 20:NEXT D between flashes, ~1/4 s */
 #define ACTIVE 2                  /* K(n) of a split hand: 2, 0 or -1 */
 #define DONE 0
 #define BUST 3
@@ -676,6 +677,7 @@ void shuffle(void)
         a[hh]--;
         deck[cc] = ranks[hh];
         lclr();
+        laddc(' ');               /* PRINT C: a number prints with a blank for its sign */
         laddn(cc);
         ladd("  ");
         out(9);
@@ -713,7 +715,7 @@ void playerBlackjack(void)        /* "L" */
     outStr(eCol(), e);
     for (fl = 0; fl < 6; fl++) {
         bp();
-        delayTicks(36);
+        delayTicks(FLASH_TICKS);
         lcdInvert();
     }
     wm = 75;
@@ -1175,7 +1177,7 @@ int main(void)
     wm = 0;
     say("  BLACKJACK - AFPV 1984");
     for (fl = 0; fl < 11; fl++) {
-        delayTicks(36);
+        delayTicks(FLASH_TICKS);
         lcdInvert();
     }
     z = 20;
