@@ -360,9 +360,18 @@ static float rough_cost_estimate(const assignment &a, unsigned short int i, cons
 }
 
 // A compare that genCmp() fuses with the IFX after it (ifxForOp()) never
-// stores its 0/1 result, and generates that IFX itself.
+// stores its 0/1 result, and generates that IFX itself; so does a bit
+// test genBitwise() fuses (lh5801_bitTest()).
 static void extra_ic_generated(iCode *ic)
 {
+  iCode *bt;
+  if ((bt = lh5801_bitTest(ic)))
+    {
+      OP_SYMBOL(IC_RESULT(ic))->for_newralloc = false;
+      OP_SYMBOL(IC_RESULT(ic))->regType = REG_CND;
+      bt->generated = true;
+      return;
+    }
   if (ic->op == '>' || ic->op == '<' || ic->op == LE_OP || ic->op == GE_OP || ic->op == EQ_OP || ic->op == NE_OP)
     {
       iCode *ifx;
