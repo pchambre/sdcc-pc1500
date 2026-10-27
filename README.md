@@ -51,9 +51,11 @@ small changes too:
 - **`src/SDCCglue.c`** — added `TARGET_IS_LH5801` cases to the
   `__sdcc_program_startup` stub's mnemonic selection (this code hardcoded
   mcs51-style `lcall`/`ljmp`/`sjmp` with no fallback for an unrecognized
-  target). Dead code for this port in practice (LH5801's own
-  `genInitStartup` jumps straight to `_main`), but it still has to
-  assemble.
+  target): for this port HOME holds only the entry label, and GSFINAL saves
+  S for `exit()`, calls `_main` and returns to BASIC.
+- **`src/SDCCpeeph.c`** — `labelIsUncondJump()` picks each target's jump
+  mnemonics; added the LH5801's (`jmp`/`bch`), and a FALSE return for a
+  target with none listed instead of `strlen(NULL)`.
 - **`src/SDCCsymt.c`** — added `TARGET_IS_LH5801` to the list of
   no-native-multiply, byte-oriented targets when registering the compiler's
   built-in `_muluchar`/`_mulint`/etc. helper function types. Without this,

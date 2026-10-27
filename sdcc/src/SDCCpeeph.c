@@ -672,6 +672,13 @@ FBYNAME (label5IsUncondJumpTo6)
     {
       jpInst1 = "goto";
     }
+  else if (TARGET_IS_LH5801)
+    {
+      jpInst1 = "jmp";
+      jpInst2 = "bch";
+    }
+  if (!jpInst1)
+    return false; /* a port with no jump mnemonics listed here */
   len = strlen(jpInst1);
   if (strncmp(p, jpInst1, len))
     {

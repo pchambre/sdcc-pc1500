@@ -20,6 +20,7 @@
 #include "ralloc.h"
 #include "gen.h"
 #include "SDCCgen.h"
+#include "SDCCpeeph.h"
 
 /*-----------------------------------------------------------------*/
 /* Output, and the register allocator's dry run                     */
@@ -2569,7 +2570,8 @@ genNot (const iCode *ic)
 }
 
 /*-----------------------------------------------------------------*/
-/* dropReloads - remove "lda (m)" right after "sta (m)"             */
+/* dropReloads - remove "lda (m)" right after "sta (m)" (or a       */
+/* register half: "lda xl" after "sta xl")                           */
 /*                                                                   */
 /* Every gen*() here stores its result to memory and the next one     */
 /* loads its operand back, so this pair is everywhere (it was ~180     */
@@ -2592,10 +2594,14 @@ dropReloads (lineNode *head)
       if (!ln->line || !nx->line || ln->isInline || nx->isInline || ln->isLabel ||
           nx->isLabel || ln->isComment || nx->isComment)
         continue;
-      if (strncmp (ln->line, "sta\t(", 5) || strncmp (nx->line, "lda\t(", 5) ||
+      /* a memory location, or a register half (STA XL / LDA XL ...) */
+      if (strncmp (ln->line, "sta\t", 4) || strncmp (nx->line, "lda\t", 4) ||
           strcmp (ln->line + 3, nx->line + 3) ||
           !strcmp (ln->line + 4, "(x)") || !strcmp (ln->line + 4, "(y)") ||
           !strcmp (ln->line + 4, "(u)"))
+        continue;
+      if (ln->line[4] != '(' &&
+          !(strchr ("xyu", ln->line[4]) && strchr ("lh", ln->line[5]) && !ln->line[6]))
         continue;
       br = nx->next ? nx->next->line : NULL;
       if (br && br[0] == 'b' && br[1] && strchr ("zchv", br[1]) && (br[2] == 's' || br[2] == 'r'))
@@ -2770,8 +2776,31 @@ genLH5801Code (iCode *lic)
      stm8/gen.c's genStm8Code() does the same destroy_line_list() call for
      the same reason. */
   dropReloads (genLine.lineHead);
+  /* peeph.def's rules -- after dropReloads(), so the branch distances
+     they measure are the final ones (or smaller). */
+  if (!options.nopeep)
+    peepHole (&genLine.lineHead);
   printLine (genLine.lineHead, codeOutBuf);
   destroy_line_list ();
+}
+
+/* The size in bytes of one line of this port's assembly, for the
+   peephole optimizer's branch-distance checks (labelInRange()): 0 for a
+   label, comment or directive. */
+int
+lh5801_getInstructionSize (lineNode *line)
+{
+  const char *p = line->line;
+  size_t n;
+
+  if (!p || line->isComment || line->isLabel)
+    return 0;
+  while (*p == ' ' || *p == '\t')
+    p++;
+  n = strlen (p);
+  if (!*p || *p == ';' || *p == '.' || (n && p[n - 1] == ':'))
+    return 0;
+  return instSize (p);
 }
 
 /*-----------------------------------------------------------------*/

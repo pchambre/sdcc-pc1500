@@ -13,6 +13,7 @@
 #define LH5801GEN_H 1
 
 #include "ralloc.h"
+#include "SDCCgen.h"
 
 /* Phase 1 asmop: deliberately just three cases. Every operand is either
    a compile-time literal, lives at a fixed, directly-addressed memory
@@ -82,6 +83,9 @@ iCode *lh5801_bitTest (const iCode *ic);
 
 /* The store of an `s[k] op= c` triple whose load is `ic`, or NULL. */
 iCode *lh5801_memUpdate (const iCode *ic);
+
+/* One line's size in bytes, for the peephole optimizer (main.c). */
+int lh5801_getInstructionSize (lineNode *line);
 
 /* Emits a bare label definition for any basic block SDCCBBlock.c's
    iCodeFromeBBlock() silently dropped from genLH5801Code()'s own linear

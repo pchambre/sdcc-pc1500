@@ -14,6 +14,12 @@
 #include "ralloc.h"
 #include "gen.h"
 
+/* peeph.def, made into a C string by SDCCpeeph.awk (port.mk). */
+static char lh5801_defaultRules[] =
+{
+#include "peeph.rul"
+};
+
 /*-----------------------------------------------------------------*/
 /* lh5801_init - one-time port init: hook up the sdas/aslh5801     */
 /* ("asxxxx"-family) assembly-text conventions (!tlabel, !area,    */
@@ -379,9 +385,9 @@ PORT lh5801_port =
     NULL,                       /* crt */
     NULL,                       /* libs -- none yet */
   },
-  {                             /* Peephole optimizer -- no rules yet */
-    "",
-    NULL,
+  {                             /* Peephole optimizer: peeph.def */
+    lh5801_defaultRules,
+    lh5801_getInstructionSize,
     NULL,
     NULL,
     NULL,
