@@ -1391,6 +1391,52 @@ lh5801_bitTest (const iCode *ic)
   return ifxForOp (IC_RESULT (ic), ic);
 }
 
+/* `s[k] op= c` on an element at a constant address -- SDCC's three
+   adjacent iCodes
+     t1 = @[&s + k]   t2 = t1 op c   @[&s + k] := t2
+   for op + - & | and a constant c, the temps used nowhere else -- is
+   done in place on the element (genMemUpdate()), exactly like `x op= c`
+   on a plain variable. Returns the store iCode if `ic` is the load of
+   such a triple, else NULL. ralloc.c marks the other two iCodes generated
+   and gives the temps no storage, before allocation, so the allocator
+   and the code generator agree. */
+iCode *
+lh5801_memUpdate (const iCode *ic)
+{
+  iCode *opic, *st;
+  operand *t1, *t2;
+  long o1 = 0, o3 = 0;
+  const char *b1, *b3;
+
+  if (ic->op != GET_VALUE_AT_ADDRESS || !isRemat (IC_LEFT (ic)) ||
+      (IC_RIGHT (ic) && !IS_OP_LITERAL (IC_RIGHT (ic))))
+    return NULL;
+  if (!(opic = ic->next) || !(st = opic->next))
+    return NULL;
+  if (opic->op != '+' && opic->op != '-' && opic->op != '&' && opic->op != BITWISEAND &&
+      opic->op != '|')
+    return NULL;
+  t1 = IC_RESULT (ic);
+  if (!IS_ITEMP (t1) || !IS_OP_LITERAL (IC_RIGHT (opic)) || !IS_SYMOP (IC_LEFT (opic)) ||
+      IC_LEFT (opic)->key != t1->key)
+    return NULL;
+  t2 = IC_RESULT (opic);
+  if (!IS_ITEMP (t2) || t2->key == t1->key || st->op != '=' || !POINTER_SET (st) ||
+      !isRemat (IC_RESULT (st)) || !IS_SYMOP (IC_RIGHT (st)) || IC_RIGHT (st)->key != t2->key)
+    return NULL;
+  if (bitVectnBitsOn (OP_USES (t1)) != 1 || bitVectnBitsOn (OP_USES (t2)) != 1)
+    return NULL;
+  if (getSize (operandType (t1)) != getSize (operandType (t2)) || getSize (operandType (t1)) > 4)
+    return NULL;
+  b1 = rematBase (OP_SYMBOL (IC_LEFT (ic)), &o1);
+  if (IC_RIGHT (ic))
+    o1 += (long) operandLitValue (IC_RIGHT (ic));
+  b3 = rematBase (OP_SYMBOL (IC_RESULT (st)), &o3);
+  if (strcmp (b1, b3) || o1 != o3)
+    return NULL;
+  return st;
+}
+
 /* Do two operands name the very same storage? */
 static bool
 sameStorage (const asmop *a, const asmop *b)
@@ -2299,6 +2345,67 @@ genShift (const iCode *ic, bool isLeft)
 /* compile time into one constant and loads X directly, no runtime add       */
 /* needed at all. */
 /*-----------------------------------------------------------------*/
+
+/* The in-place update of an element at a constant address that
+   lh5801_memUpdate() found starting at the load `ic`: the element is
+   addressed as plain memory, (&s + k), and changed by
+   genAddSubInPlace()'s ADI chain or ANI/ORI on the bytes the mask
+   changes -- or, for a constant ADI can't chain, an ordinary add through
+   A on the element itself. The temps are never touched. */
+static void
+genMemUpdate (const iCode *ic)
+{
+  const iCode *opic = ic->next;
+  operand *lit = IC_RIGHT (opic);
+  int size = getSize (operandType (IC_RESULT (ic)));
+  long offset = IC_RIGHT (ic) ? (long) operandLitValue (IC_RIGHT (ic)) : 0;
+  asmop elem;
+  char addr[800 + 48];
+  int i;
+
+  aopOp (IC_LEFT (ic));
+  aopOp (lit);
+  snprintf (addr, sizeof (addr), offset ? "(%s + %ld)" : "%s", IC_LEFT (ic)->aop->u.dir, offset);
+  memset (&elem, 0, sizeof (elem));
+  elem.type = AOP_DIR;
+  elem.size = size;
+  elem.u.dir = addr;
+
+  if (opic->op == '+' || opic->op == '-')
+    {
+      bool isSub = opic->op == '-';
+
+      if (!genAddSubInPlace (&elem, &elem, lit->aop, isSub))
+        {
+          emit (isSub ? "sec" : "rec", "");
+          for (i = size - 1; i >= 0; i--)
+            {
+              loadA (&elem, i, size);
+              opA (isSub ? "sbc" : "adc", isSub ? "sbi" : "adi", lit->aop, i, size);
+              storeA (&elem, i);
+            }
+        }
+    }
+  else
+    {
+      bool isAnd = opic->op != '|';
+      char buf[sizeof (addr) + 16];
+
+      for (i = 0; i < size; i++)
+        {
+          unsigned char m = litByte (lit->aop, i, size);
+
+          if (m == (isAnd ? 0xFF : 0x00))
+            continue;
+          dirAddr (buf, sizeof (buf), &elem, i);
+          emit (isAnd ? "ani" : "ori", "(%s), 0x%02x", buf, m);
+        }
+    }
+
+  freeAsmop (lit);
+  freeAsmop (IC_LEFT (ic));
+}
+
 static void
 genGetValueAtAddress (const iCode *ic)
 {
@@ -2308,6 +2415,12 @@ genGetValueAtAddress (const iCode *ic)
   int size, i;
   unsigned long offset = 0;
   char pair;
+
+  if (lh5801_memUpdate (ic))
+    {
+      genMemUpdate (ic);
+      return;
+    }
 
   aopOp (left);
   aopOp (result);

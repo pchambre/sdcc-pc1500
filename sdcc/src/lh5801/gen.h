@@ -80,6 +80,9 @@ float drylh5801iCode (iCode *ic);
 /* The IFX a fused `x & k` bit test generates itself, or NULL. */
 iCode *lh5801_bitTest (const iCode *ic);
 
+/* The store of an `s[k] op= c` triple whose load is `ic`, or NULL. */
+iCode *lh5801_memUpdate (const iCode *ic);
+
 /* Emits a bare label definition for any basic block SDCCBBlock.c's
    iCodeFromeBBlock() silently dropped from genLH5801Code()'s own linear
    chain -- see ralloc.c's caller for why this is needed at all. */
