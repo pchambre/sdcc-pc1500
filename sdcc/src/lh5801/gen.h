@@ -28,10 +28,12 @@
    `output_char = put_char_to_stdout;` (vprintf.c) into "lda
    (put_char_to_stdout)", reading the function's own *machine code* as
    if it were a stored pointer value, corrupting the PCALL trampoline's
-   patched target and sending execution into never-mapped memory. There
-   is no register-resident case: A is used only as scratch within a
-   single gen*() call, never as a place where a value is expected to
-   still be sitting in a later iCode. */
+   patched target and sending execution into never-mapped memory.
+   AOP_REG is for the register allocator: until it assigns registers,
+   nothing is register-resident and A is only scratch within one gen*()
+   call. Every gen*() reaches operand bytes through gen.c's loadA()/
+   storeA()/opA(), which know each operand type, so AOP_REG needs no
+   further changes there. */
 typedef enum
 {
   AOP_LIT,
@@ -44,9 +46,26 @@ typedef enum
      pointer load or store through it is a plain direct "lda/sta (sym +
      k)", any other use of its value is ">(sym + k)"/"<(sym + k)", and the
      iCodes that only computed it emit nothing. */
-  AOP_IMMD
+  AOP_IMMD,
+  /* In registers: byte i lives in regs[i], one of the LH5801_REG_* below
+     (the register allocator's choice -- see ralloc2.cc). */
+  AOP_REG
 }
 AOP_TYPE;
+
+/* The 8-bit registers a value byte can live in: A, and the halves of the
+   X/Y/U pointer registers. Indices into gen.c's register-name table. */
+enum
+{
+  LH5801_REG_A = 0,
+  LH5801_REG_XL,
+  LH5801_REG_XH,
+  LH5801_REG_YL,
+  LH5801_REG_YH,
+  LH5801_REG_UL,
+  LH5801_REG_UH,
+  LH5801_NUM_REGS
+};
 
 typedef struct asmop
 {
@@ -60,6 +79,7 @@ typedef struct asmop
                         AOP_FUNC: the function's own rname, read via
                         ">dir"/"<dir" instead of "(dir + i)".
                         AOP_IMMD: the address expression, "(sym + k)". */
+      signed char regs[8];  /* AOP_REG: byte i's register */
     }
   u;
 }

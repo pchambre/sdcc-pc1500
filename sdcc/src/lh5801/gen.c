@@ -73,7 +73,7 @@ aopOp (operand *op)
     {
       long offset = 0;
       const char *base = rematBase (OP_SYMBOL (op), &offset);
-      char buf[256];
+      char buf[800 + 32];   /* rname can be up to SDCC_NAME_MAX long, as in genAddrOf() */
 
       if (offset)
         snprintf (buf, sizeof (buf), "(%s %c 0x%lx)", base, offset < 0 ? '-' : '+',
@@ -170,21 +170,42 @@ litByte (const asmop *aop, int offset, int size)
   return byteOfVal (aop->u.lit, size - 1 - offset);
 }
 
-/* Loads byte `offset` of `aop` (LIT, DIR, or FUNC) into A -- the same
-   check genAssign()/genReturn()/genIpush() each used to do inline,
-   factored out since genAddSub()/genCmp() below both need it too.
-   AOP_FUNC is 2-byte-only (a flat address in this port); offset 0 is
-   the high byte (">"), offset 1 the low byte ("<"), matching
-   genAddrOf()'s own convention exactly. */
-static void
-loadByteToA (const asmop *aop, int offset, int size)
+/*-----------------------------------------------------------------*/
+/* Operand byte access -- every gen*() reaches its operands' bytes    */
+/* through these three, so each one knows every operand type in one   */
+/* place: a literal, a memory location (AOP_DIR), a link-time-constant */
+/* address (AOP_FUNC/AOP_IMMD) or a register (AOP_REG).                */
+/*-----------------------------------------------------------------*/
+
+static const char *const regName[LH5801_NUM_REGS] = {"a", "xl", "xh", "yl", "yh", "ul", "uh"};
+
+/* The register byte `offset` of `aop` is in, or -1 if it isn't in one. */
+static int
+aopReg (const asmop *aop, int offset)
 {
+  return aop->type == AOP_REG ? aop->u.regs[offset] : -1;
+}
+
+/* A = byte `offset` of `aop` (as a `size`-byte value -- a literal's own
+   size can be smaller). AOP_FUNC/AOP_IMMD are 2-byte addresses: offset
+   0 is the high byte (">"), offset 1 the low byte ("<"), genAddrOf()'s
+   convention. A byte already in A costs nothing. */
+static void
+loadA (const asmop *aop, int offset, int size)
+{
+  int r = aopReg (aop, offset);
+
   if (aop->type == AOP_LIT)
     emitcode ("ldi", "a, 0x%02x", litByte (aop, offset, size));
   else if (aop->type == AOP_FUNC || aop->type == AOP_IMMD)
     {
       wassertl (size == 2, "lh5801: a function reference or constant address must be a 2-byte pointer");
       emitcode ("ldi", "a, %s%s", offset == 0 ? ">" : "<", aop->u.dir);
+    }
+  else if (r >= 0)
+    {
+      if (r != LH5801_REG_A)
+        emitcode ("lda", "%s", regName[r]);
     }
   else
     {
@@ -193,6 +214,83 @@ loadByteToA (const asmop *aop, int offset, int size)
       dirAddr (buf, sizeof (buf), aop, offset);
       emitcode ("lda", "(%s)", buf);
     }
+}
+
+/* Byte `offset` of `aop` = A. */
+static void
+storeA (const asmop *aop, int offset)
+{
+  int r = aopReg (aop, offset);
+
+  if (r >= 0)
+    {
+      if (r != LH5801_REG_A)
+        emitcode ("sta", "%s", regName[r]);
+    }
+  else
+    {
+      char buf[128];
+
+      dirAddr (buf, sizeof (buf), aop, offset);
+      emitcode ("sta", "(%s)", buf);
+    }
+}
+
+/* A = A <op> byte `offset` of `aop`: memMn is the memory/register form
+   (adc, sbc, and, ora, eor, cpa), immMn the immediate one (adi, sbi,
+   ani, ori, eai, cpi) for a literal. Only ADC, SBC and CPA (like LDA/
+   STA) take a register half as their operand -- AND/ORA/EOR have no such
+   form. */
+static void
+opA (const char *memMn, const char *immMn, const asmop *aop, int offset, int size)
+{
+  int r = aopReg (aop, offset);
+
+  if (aop->type == AOP_LIT)
+    emitcode (immMn, "a, #0x%02x", litByte (aop, offset, size));
+  else if (r >= 0)
+    {
+      wassertl (r != LH5801_REG_A, "lh5801: opA() with A as both operands");
+      wassertl (!strcmp (memMn, "adc") || !strcmp (memMn, "sbc") || !strcmp (memMn, "cpa"),
+                "lh5801: this operation has no register-operand form");
+      emitcode (memMn, "%s", regName[r]);
+    }
+  else
+    {
+      char buf[128];
+
+      dirAddr (buf, sizeof (buf), aop, offset);
+      emitcode (memMn, "(%s)", buf);
+    }
+}
+
+/* X = the 2-byte pointer `aop` + a constant `offset`: a literal address
+   straight into X, anything else low byte then high byte through A, the
+   offset added on the way (ADI's carry chain). */
+static void
+loadPtrX (const asmop *aop, unsigned long offset)
+{
+  if (aop->type == AOP_LIT)
+    {
+      unsigned long addr = ulFromVal (aop->u.lit) + offset;
+
+      emitcode ("ldi", "xh, #0x%02x", (unsigned) ((addr >> 8) & 0xFF));
+      emitcode ("ldi", "xl, #0x%02x", (unsigned) (addr & 0xFF));
+      return;
+    }
+
+  loadA (aop, 1, aop->size);  /* low byte */
+  if (offset)
+    {
+      emitcode ("rec", "");
+      emitcode ("adi", "a, #0x%02lx", offset);
+    }
+  emitcode ("sta", "xl");
+
+  loadA (aop, 0, aop->size);  /* high byte */
+  if (offset)
+    emitcode ("adi", "a, #0x00");  /* propagate the low byte's carry-out */
+  emitcode ("sta", "xh");
 }
 
 /*-----------------------------------------------------------------*/
@@ -409,12 +507,7 @@ genReturn (const iCode *ic)
         "lh5801: phase-1 backend only supports 0- to 8-byte return values");
 
       if (left->aop->size == 1)
-        {
-          if (left->aop->type == AOP_LIT)
-            emitcode ("ldi", "a, 0x%02x", litByte (left->aop, 0, 1));
-          else
-            emitcode ("lda", "(%s)", left->aop->u.dir);
-        }
+        loadA (left->aop, 0, 1);
       else if (left->aop->size >= 2)
         {
           /* Bytes 0-1 always go through X, exactly as before (size==2's
@@ -428,14 +521,9 @@ genReturn (const iCode *ic)
             }
           else
             {
-              char buf[128];
-
-              dirAddr (buf, sizeof (buf), left->aop, 0);
-              emitcode ("lda", "(%s)", buf);
+              loadA (left->aop, 0, left->aop->size);
               emitcode ("sta", "xh");
-
-              dirAddr (buf, sizeof (buf), left->aop, 1);
-              emitcode ("lda", "(%s)", buf);
+              loadA (left->aop, 1, left->aop->size);
               emitcode ("sta", "xl");
             }
 
@@ -445,15 +533,7 @@ genReturn (const iCode *ic)
 
               for (i = 2; i < left->aop->size; i++)
                 {
-                  if (left->aop->type == AOP_LIT)
-                    emitcode ("ldi", "a, 0x%02x", litByte (left->aop, i, left->aop->size));
-                  else
-                    {
-                      char buf[128];
-
-                      dirAddr (buf, sizeof (buf), left->aop, i);
-                      emitcode ("lda", "(%s)", buf);
-                    }
+                  loadA (left->aop, i, left->aop->size);
                   emitcode ("sta", "(__lh5801_ret%d)", i);
                 }
             }
@@ -532,7 +612,7 @@ genIpush (const iCode *ic)
      va_arg and reentrant-parameter support were added. */
   for (i = size - 1; i >= 0; i--)
     {
-      loadByteToA (left->aop, i, size);
+      loadA (left->aop, i, size);
       emitcode ("psh", "a");
     }
 
@@ -586,7 +666,6 @@ genAddrOf (const iCode *ic)
   symbol *sym;
   long offset = 0;
   char sym_expr[800]; /* rname can be up to SDCC_NAME_MAX (SDCCsymt.h) long */
-  char buf[128];
 
   wassertl (IS_SYMOP (left), "lh5801: ADDRESS_OF operand must be a symbol");
   sym = OP_SYMBOL (left);
@@ -627,12 +706,10 @@ genAddrOf (const iCode *ic)
       wassertl (result->aop->size == 2, "lh5801: ADDRESS_OF result must be a 2-byte pointer");
 
       emitcode ("lda", "xh");
-      dirAddr (buf, sizeof (buf), result->aop, 0);
-      emitcode ("sta", "(%s)", buf);
+      storeA (result->aop, 0);
 
       emitcode ("lda", "xl");
-      dirAddr (buf, sizeof (buf), result->aop, 1);
-      emitcode ("sta", "(%s)", buf);
+      storeA (result->aop, 1);
 
       freeAsmop (result);
       return;
@@ -647,12 +724,10 @@ genAddrOf (const iCode *ic)
   wassertl (result->aop->size == 2, "lh5801: ADDRESS_OF result must be a 2-byte pointer");
 
   emitcode ("ldi", "a, >%s", sym_expr);
-  dirAddr (buf, sizeof (buf), result->aop, 0);
-  emitcode ("sta", "(%s)", buf);
+  storeA (result->aop, 0);
 
   emitcode ("ldi", "a, <%s", sym_expr);
-  dirAddr (buf, sizeof (buf), result->aop, 1);
-  emitcode ("sta", "(%s)", buf);
+  storeA (result->aop, 1);
 
   freeAsmop (result);
 }
@@ -687,7 +762,6 @@ genWiden (operand *result, operand *right)
   int resultSize = result->aop->size;
   int rightSize = right->aop->size;
   int extra = resultSize - rightSize;
-  char buf[128];
   int i;
 
   if (right->aop->type == AOP_LIT)
@@ -695,18 +769,17 @@ genWiden (operand *result, operand *right)
       for (i = 0; i < resultSize; i++)
         {
           emitcode ("ldi", "a, 0x%02x", litByte (right->aop, i, resultSize));
-          dirAddr (buf, sizeof (buf), result->aop, i);
-          emitcode ("sta", "(%s)", buf);
+          storeA (result->aop, i);
         }
       return;
     }
 
-  if (right->aop->type == AOP_DIR && !SPEC_USIGN (getSpec (operandType (right))) &&
-      !IS_PTR (operandType (right)))
+  if ((right->aop->type == AOP_DIR || right->aop->type == AOP_REG) &&
+      !SPEC_USIGN (getSpec (operandType (right))) && !IS_PTR (operandType (right)))
     {
       symbol *positive = newiTempLabel (NULL);
 
-      loadByteToA (right->aop, 0, rightSize);
+      loadA (right->aop, 0, rightSize);
       emitcode ("ani", "a, #0x80");
       emitcode ("bzs", "!tlabel", labelKey2num (positive->key));
       emitcode ("ldi", "a, 0xff");
@@ -717,15 +790,13 @@ genWiden (operand *result, operand *right)
 
   for (i = 0; i < extra; i++)
     {
-      dirAddr (buf, sizeof (buf), result->aop, i);
-      emitcode ("sta", "(%s)", buf);
+      storeA (result->aop, i);
     }
 
   for (i = 0; i < rightSize; i++)
     {
-      loadByteToA (right->aop, i, rightSize);
-      dirAddr (buf, sizeof (buf), result->aop, extra + i);
-      emitcode ("sta", "(%s)", buf);
+      loadA (right->aop, i, rightSize);
+      storeA (result->aop, extra + i);
     }
 }
 
@@ -735,7 +806,6 @@ genCast (const iCode *ic)
   operand *result = IC_RESULT (ic);
   operand *right = IC_RIGHT (ic);
   int resultSize, rightSize, i;
-  char buf[128];
 
   aopOp (right);
   aopOp (result);
@@ -749,9 +819,8 @@ genCast (const iCode *ic)
 
       for (i = 0; i < resultSize; i++)
         {
-          loadByteToA (right->aop, srcOffset + i, rightSize);
-          dirAddr (buf, sizeof (buf), result->aop, i);
-          emitcode ("sta", "(%s)", buf);
+          loadA (right->aop, srcOffset + i, rightSize);
+          storeA (result->aop, i);
         }
     }
   else
@@ -770,7 +839,6 @@ genCall (const iCode *ic)
   if (ic->op == PCALL)
     {
       operand *left = IC_LEFT (ic);
-      char buf[128];
 
       if (!pcallTrampolineEmitted)
         {
@@ -795,12 +863,10 @@ genCall (const iCode *ic)
       aopToDir (left, 0);
       wassertl (left->aop->size == 2, "lh5801: PCALL target must be a 2-byte function pointer");
 
-      dirAddr (buf, sizeof (buf), left->aop, 0);
-      emitcode ("lda", "(%s)", buf);
+      loadA (left->aop, 0, left->aop->size);
       emitcode ("sta", "(__lh5801_pcall_trampoline + 1)");
 
-      dirAddr (buf, sizeof (buf), left->aop, 1);
-      emitcode ("lda", "(%s)", buf);
+      loadA (left->aop, 1, left->aop->size);
       emitcode ("sta", "(__lh5801_pcall_trampoline + 2)");
 
       freeAsmop (left);
@@ -865,10 +931,7 @@ genCall (const iCode *ic)
 
           if (i >= skip)
             {
-              char buf[128];
-
-              dirAddr (buf, sizeof (buf), result->aop, i - skip);
-              emitcode ("sta", "(%s)", buf);
+              storeA (result->aop, i - skip);
             }
         }
 
@@ -897,7 +960,6 @@ genAssign (const iCode *ic)
   operand *result = IC_RESULT (ic);
   operand *right = IC_RIGHT (ic);
   int resultSize, rightSize, i;
-  char buf[128];
 
   aopOp (right);
   aopOp (result);
@@ -922,9 +984,8 @@ genAssign (const iCode *ic)
 
       for (i = 0; i < resultSize; i++)
         {
-          loadByteToA (right->aop, srcOffset + i, rightSize);
-          dirAddr (buf, sizeof (buf), result->aop, i);
-          emitcode ("sta", "(%s)", buf);
+          loadA (right->aop, srcOffset + i, rightSize);
+          storeA (result->aop, i);
         }
     }
   else
@@ -965,7 +1026,6 @@ genPointerSet (const iCode *ic)
   operand *result = IC_RESULT (ic);
   operand *right = IC_RIGHT (ic);
   int size, i;
-  char buf[128];
 
   aopOp (right);
   aopOp (result);
@@ -979,7 +1039,7 @@ genPointerSet (const iCode *ic)
       /* A constant address: store to it directly, no X at all. */
       for (i = 0; i < size; i++)
         {
-          loadByteToA (right->aop, i, size);
+          loadA (right->aop, i, size);
           emitcode ("sta", "(%s + %d)", result->aop->u.dir, i);
         }
       freeAsmop (right);
@@ -987,27 +1047,11 @@ genPointerSet (const iCode *ic)
       return;
     }
 
-  if (result->aop->type == AOP_LIT)
-    {
-      unsigned long addr = ulFromVal (OP_VALUE (result));
-
-      emitcode ("ldi", "xh, #0x%02x", (unsigned) ((addr >> 8) & 0xFF));
-      emitcode ("ldi", "xl, #0x%02x", (unsigned) (addr & 0xFF));
-    }
-  else
-    {
-      dirAddr (buf, sizeof (buf), result->aop, 1);  /* low byte */
-      emitcode ("lda", "(%s)", buf);
-      emitcode ("sta", "xl");
-
-      dirAddr (buf, sizeof (buf), result->aop, 0);  /* high byte */
-      emitcode ("lda", "(%s)", buf);
-      emitcode ("sta", "xh");
-    }
+  loadPtrX (result->aop, 0);
 
   for (i = 0; i < size; i++)
     {
-      loadByteToA (right->aop, i, size);
+      loadA (right->aop, i, size);
       emitcode ("sin", "x");
     }
 
@@ -1070,28 +1114,22 @@ genAddSub (const iCode *ic, bool isSub)
 
   for (i = size - 1; i >= 0; i--)
     {
-      char buf[128];
-
       if (i < leftExtra)
         emitcode ("ldi", "a, 0x00");
       else
-        loadByteToA (left->aop, i - leftExtra, left->aop->size);
+        loadA (left->aop, i - leftExtra, left->aop->size);
 
       if (right->aop->type == AOP_LIT)
-        emitcode (isSub ? "sbi" : "adi", "a, #0x%02x", litByte (right->aop, i, size));
+        opA (isSub ? "sbc" : "adc", isSub ? "sbi" : "adi", right->aop, i, size);
       else if (i < rightExtra)
         /* No real memory address holds this zero-extension byte -- add/
            subtract a literal 0 instead, still propagating the carry
            chain exactly like a real byte would. */
         emitcode (isSub ? "sbi" : "adi", "a, #0x00");
       else
-        {
-          dirAddr (buf, sizeof (buf), right->aop, i - rightExtra);
-          emitcode (isSub ? "sbc" : "adc", "(%s)", buf);
-        }
+        opA (isSub ? "sbc" : "adc", isSub ? "sbi" : "adi", right->aop, i - rightExtra, right->aop->size);
 
-      dirAddr (buf, sizeof (buf), result->aop, i);
-      emitcode ("sta", "(%s)", buf);
+      storeA (result->aop, i);
     }
 
   freeAsmop (left);
@@ -1275,10 +1313,7 @@ genCmp (const iCode *ic, iCode *ifx)
      since SBC has no "operand xor 80H" form. */
   if (isSigned && right->aop->type != AOP_LIT)
     {
-      char buf[128];
-
-      dirAddr (buf, sizeof (buf), right->aop, 0);
-      emitcode ("lda", "(%s)", buf);
+      loadA (right->aop, 0, right->aop->size);
       emitcode ("eai", "a, #0x80");
       emitcode ("sta", "(__lh5801_cmp_signA)");
     }
@@ -1293,10 +1328,9 @@ genCmp (const iCode *ic, iCode *ifx)
 
   for (i = size - 1; i >= 0; i--)
     {
-      char buf[128];
       bool flip = isSigned && i == 0;
 
-      loadByteToA (left->aop, i, size);
+      loadA (left->aop, i, size);
       if (flip)
         emitcode ("eai", "a, #0x80");
 
@@ -1305,10 +1339,7 @@ genCmp (const iCode *ic, iCode *ifx)
       else if (flip)
         emitcode ("sbc", "(__lh5801_cmp_signA)");
       else
-        {
-          dirAddr (buf, sizeof (buf), right->aop, i);
-          emitcode ("sbc", "(%s)", buf);
-        }
+        opA ("sbc", "sbi", right->aop, i, size);
 
       if (needScratch)
         {
@@ -1374,7 +1405,7 @@ genCmp (const iCode *ic, iCode *ifx)
   emitcode ("ldi", "a, 0x01");
   emitLabel (endLabel);
 
-  emitcode ("sta", "(%s)", result->aop->u.dir);
+  storeA (result->aop, 0);
   freeAsmop (result);
 }
 
@@ -1425,10 +1456,10 @@ genIfx (const iCode *ic)
 
   for (i = 0; i < size; i++)
     {
-      char buf[128];
-
-      dirAddr (buf, sizeof (buf), cond->aop, i);
-      emitcode (i == 0 ? "lda" : "ora", "(%s)", buf);
+      if (i == 0)
+        loadA (cond->aop, 0, size);
+      else
+        opA ("ora", "ori", cond->aop, i, size);
     }
 
   freeAsmop (cond);
@@ -1499,20 +1530,9 @@ genBitwise (const iCode *ic)
 
   for (i = 0; i < size; i++)
     {
-      char buf[128];
-
-      loadByteToA (left->aop, i, size);
-
-      if (right->aop->type == AOP_LIT)
-        emitcode (immMnemonic, "a, #0x%02x", litByte (right->aop, i, size));
-      else
-        {
-          dirAddr (buf, sizeof (buf), right->aop, i);
-          emitcode (memMnemonic, "(%s)", buf);
-        }
-
-      dirAddr (buf, sizeof (buf), result->aop, i);
-      emitcode ("sta", "(%s)", buf);
+      loadA (left->aop, i, size);
+      opA (memMnemonic, immMnemonic, right->aop, i, size);
+      storeA (result->aop, i);
     }
 
   freeAsmop (left);
@@ -1564,17 +1584,15 @@ genBitwise (const iCode *ic)
 static void
 emitShiftPass (asmop *resultAop, int size, bool isLeft, bool arithmeticRight)
 {
-  char buf[128];
   int i;
 
   if (isLeft)
     {
       for (i = size - 1; i >= 0; i--)
         {
-          dirAddr (buf, sizeof (buf), resultAop, i);
-          emitcode ("lda", "(%s)", buf);
+          loadA (resultAop, i, resultAop->size);
           emitcode (i == size - 1 ? "shl" : "rol", "");
-          emitcode ("sta", "(%s)", buf);
+          storeA (resultAop, i);
         }
     }
   else if (arithmeticRight)
@@ -1582,8 +1600,7 @@ emitShiftPass (asmop *resultAop, int size, bool isLeft, bool arithmeticRight)
       symbol *nonNegLabel = newiTempLabel (NULL);
       symbol *seededLabel = newiTempLabel (NULL);
 
-      dirAddr (buf, sizeof (buf), resultAop, 0);
-      emitcode ("lda", "(%s)", buf);
+      loadA (resultAop, 0, resultAop->size);
       emitcode ("ani", "a, #0x80");
       emitcode ("bzs", "!tlabel", labelKey2num (nonNegLabel->key));
       emitcode ("sec", "");
@@ -1594,20 +1611,18 @@ emitShiftPass (asmop *resultAop, int size, bool isLeft, bool arithmeticRight)
 
       for (i = 0; i < size; i++)
         {
-          dirAddr (buf, sizeof (buf), resultAop, i);
-          emitcode ("lda", "(%s)", buf);
+          loadA (resultAop, i, resultAop->size);
           emitcode ("ror", "");
-          emitcode ("sta", "(%s)", buf);
+          storeA (resultAop, i);
         }
     }
   else
     {
       for (i = 0; i < size; i++)
         {
-          dirAddr (buf, sizeof (buf), resultAop, i);
-          emitcode ("lda", "(%s)", buf);
+          loadA (resultAop, i, resultAop->size);
           emitcode (i == 0 ? "shr" : "ror", "");
-          emitcode ("sta", "(%s)", buf);
+          storeA (resultAop, i);
         }
     }
 }
@@ -1656,7 +1671,6 @@ genMult (const iCode *ic)
   operand *var, *lit;
   unsigned long v;
   int size, n = 0, byteShift, i;
-  char buf[128];
 
   if (IS_OP_LITERAL (right))
     {
@@ -1684,9 +1698,8 @@ genMult (const iCode *ic)
   else
     for (i = 0; i < size; i++)
       {
-        loadByteToA (var->aop, var->aop->size - size + i, var->aop->size);
-        dirAddr (buf, sizeof (buf), result->aop, i);
-        emitcode ("sta", "(%s)", buf);
+        loadA (var->aop, var->aop->size - size + i, var->aop->size);
+        storeA (result->aop, i);
       }
 
   byteShift = n / 8 < size ? n / 8 : size;
@@ -1694,16 +1707,13 @@ genMult (const iCode *ic)
     {
       for (i = 0; i < size - byteShift; i++)
         {
-          dirAddr (buf, sizeof (buf), result->aop, i + byteShift);
-          emitcode ("lda", "(%s)", buf);
-          dirAddr (buf, sizeof (buf), result->aop, i);
-          emitcode ("sta", "(%s)", buf);
+          loadA (result->aop, i + byteShift, result->aop->size);
+          storeA (result->aop, i);
         }
       emitcode ("ldi", "a, 0x00");
       for (; i < size; i++)
         {
-          dirAddr (buf, sizeof (buf), result->aop, i);
-          emitcode ("sta", "(%s)", buf);
+          storeA (result->aop, i);
         }
     }
   if (byteShift < size)
@@ -1720,7 +1730,6 @@ genShift (const iCode *ic, bool isLeft)
   operand *left = IC_LEFT (ic);
   operand *right = IC_RIGHT (ic);
   int size, i;
-  char buf[128];
   bool arithmeticRight;
 
   aopOp (left);
@@ -1760,25 +1769,22 @@ genShift (const iCode *ic, bool isLeft)
         {
           for (i = 0; i < size - byteShift; i++)
             {
-              loadByteToA (left->aop, i + byteShift, size);
-              dirAddr (buf, sizeof (buf), result->aop, i);
-              emitcode ("sta", "(%s)", buf);
+              loadA (left->aop, i + byteShift, size);
+              storeA (result->aop, i);
             }
           if (byteShift)
             emitcode ("ldi", "a, 0x00");
           for (; i < size; i++)
             {
-              dirAddr (buf, sizeof (buf), result->aop, i);
-              emitcode ("sta", "(%s)", buf);
+              storeA (result->aop, i);
             }
         }
       else
         {
           for (i = size - 1; i >= byteShift; i--)
             {
-              loadByteToA (left->aop, i - byteShift, size);
-              dirAddr (buf, sizeof (buf), result->aop, i);
-              emitcode ("sta", "(%s)", buf);
+              loadA (left->aop, i - byteShift, size);
+              storeA (result->aop, i);
             }
           if (byteShift)
             {
@@ -1786,7 +1792,7 @@ genShift (const iCode *ic, bool isLeft)
                 {
                   symbol *positive = newiTempLabel (NULL);
 
-                  loadByteToA (left->aop, 0, size);
+                  loadA (left->aop, 0, size);
                   emitcode ("ani", "a, #0x80");
                   emitcode ("bzs", "!tlabel", labelKey2num (positive->key));
                   emitcode ("ldi", "a, 0xff");
@@ -1797,8 +1803,7 @@ genShift (const iCode *ic, bool isLeft)
             }
           for (; i >= 0; i--)
             {
-              dirAddr (buf, sizeof (buf), result->aop, i);
-              emitcode ("sta", "(%s)", buf);
+              storeA (result->aop, i);
             }
         }
 
@@ -1813,12 +1818,11 @@ genShift (const iCode *ic, bool isLeft)
          e.g. for `x <<= n`, in which case this is a no-op each byte). */
       for (i = 0; i < size; i++)
         {
-          loadByteToA (left->aop, i, size);
-          dirAddr (buf, sizeof (buf), result->aop, i);
-          emitcode ("sta", "(%s)", buf);
+          loadA (left->aop, i, size);
+          storeA (result->aop, i);
         }
 
-      loadByteToA (right->aop, right->aop->size - 1, right->aop->size);
+      loadA (right->aop, right->aop->size - 1, right->aop->size);
       emitcode ("sta", "(__lh5801_shift_scratch)");
 
       emitLabel (loopStart);
@@ -1889,7 +1893,6 @@ genGetValueAtAddress (const iCode *ic)
   operand *left = IC_LEFT (ic);
   operand *right = IC_RIGHT (ic);
   int size, i;
-  char buf[128];
   unsigned long offset = 0;
 
   aopOp (left);
@@ -1914,44 +1917,19 @@ genGetValueAtAddress (const iCode *ic)
       for (i = 0; i < size; i++)
         {
           emitcode ("lda", "(%s + %lu)", left->aop->u.dir, offset + i);
-          dirAddr (buf, sizeof (buf), result->aop, i);
-          emitcode ("sta", "(%s)", buf);
+          storeA (result->aop, i);
         }
       freeAsmop (left);
       freeAsmop (result);
       return;
     }
 
-  if (left->aop->type == AOP_LIT)
-    {
-      unsigned long addr = ulFromVal (OP_VALUE (left)) + offset;
-
-      emitcode ("ldi", "xh, #0x%02x", (unsigned) ((addr >> 8) & 0xFF));
-      emitcode ("ldi", "xl, #0x%02x", (unsigned) (addr & 0xFF));
-    }
-  else
-    {
-      dirAddr (buf, sizeof (buf), left->aop, 1);  /* low byte */
-      emitcode ("lda", "(%s)", buf);
-      if (offset)
-        {
-          emitcode ("rec", "");
-          emitcode ("adi", "a, #0x%02lx", offset);
-        }
-      emitcode ("sta", "xl");
-
-      dirAddr (buf, sizeof (buf), left->aop, 0);  /* high byte */
-      emitcode ("lda", "(%s)", buf);
-      if (offset)
-        emitcode ("adi", "a, #0x00");  /* propagate the low byte's carry-out */
-      emitcode ("sta", "xh");
-    }
+  loadPtrX (left->aop, offset);
 
   for (i = 0; i < size; i++)
     {
       emitcode ("lin", "x");
-      dirAddr (buf, sizeof (buf), result->aop, i);
-      emitcode ("sta", "(%s)", buf);
+      storeA (result->aop, i);
     }
 
   freeAsmop (left);
@@ -1987,20 +1965,9 @@ genUnaryMinus (const iCode *ic)
 
   for (i = size - 1; i >= 0; i--)
     {
-      char buf[128];
-
       emitcode ("ldi", "a, 0x00");
-
-      if (right->aop->type == AOP_LIT)
-        emitcode ("sbi", "a, #0x%02x", litByte (right->aop, i, size));
-      else
-        {
-          dirAddr (buf, sizeof (buf), right->aop, i);
-          emitcode ("sbc", "(%s)", buf);
-        }
-
-      dirAddr (buf, sizeof (buf), result->aop, i);
-      emitcode ("sta", "(%s)", buf);
+      opA ("sbc", "sbi", right->aop, i, size);
+      storeA (result->aop, i);
     }
 
   freeAsmop (right);
@@ -2038,10 +2005,10 @@ genNot (const iCode *ic)
 
   for (i = 0; i < size; i++)
     {
-      char buf[128];
-
-      dirAddr (buf, sizeof (buf), right->aop, i);
-      emitcode (i == 0 ? "lda" : "ora", "(%s)", buf);
+      if (i == 0)
+        loadA (right->aop, 0, size);
+      else
+        opA ("ora", "ori", right->aop, i, size);
     }
 
   freeAsmop (right);
@@ -2053,7 +2020,7 @@ genNot (const iCode *ic)
   emitcode ("ldi", "a, 0x01");
   emitLabel (endLabel);
 
-  emitcode ("sta", "(%s)", result->aop->u.dir);
+  storeA (result->aop, 0);
   freeAsmop (result);
 }
 
