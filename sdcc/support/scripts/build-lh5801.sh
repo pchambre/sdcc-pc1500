@@ -63,15 +63,16 @@ LIB_CACHE="$SDCC_ROOT/device/lib/build/lh5801"
 LIB_NAME="pc1500"
 # Generic (non-port-specific) C runtime sources from device/lib -- sdcc
 # doesn't pull these in on its own. All confirmed to compile and assemble
-# with this backend.
+# with this backend. Not __memcpy, memset, strcpy or strlen: those are
+# device/lib/lh5801/string_*.asm, on TIN/SIN/LIN/CIN.
 RUNTIME_SOURCES=(
-  printf_large vprintf sprintf strlen
+  printf_large vprintf sprintf
   _mulint _muluchar _mulschar _mullong
   _divuint _divsint _moduint _modsint
   _divuchar _moduchar _divschar _modschar
   _divulong _divslong _modulong _modslong
-  _strcpy _strcat _strcmp _strncpy _strncmp _strchr
-  _memset memcpy _memcmp _memmove
+  _strcat _strcmp _strncpy _strncmp _strchr
+  memcpy _memcmp _memmove
   abs rand __itoa
 )
 
