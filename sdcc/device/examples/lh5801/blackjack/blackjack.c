@@ -69,7 +69,7 @@ unsigned int rs = 0xACE1;
 
 /* --- random numbers: RANDOM / RND -------------------------------------- */
 
-unsigned int rnd16(void)
+static unsigned int rnd16(void)
 {
     rs ^= rs << 7;
     rs ^= rs >> 9;
@@ -79,7 +79,7 @@ unsigned int rnd16(void)
 
 /* Mixes in how long the ROM's key wait just waited (7B0CH/7B0DH count
    while it waits), so every game shuffles differently. */
-void mix(void)
+static void mix(void)
 {
     rs += *(unsigned char *)0x7B0C;
     rs ^= (unsigned int)*(unsigned char *)0x7B0D << 8;
@@ -89,7 +89,7 @@ void mix(void)
 }
 
 /* RND cc: 1..cc */
-unsigned char rnd(unsigned char cc)
+static unsigned char rnd(unsigned char cc)
 {
     unsigned char mask = 1;
     unsigned char rv;
@@ -104,7 +104,7 @@ unsigned char rnd(unsigned char cc)
 
 /* --- keys, sound, WAIT --------------------------------------------------- */
 
-unsigned char getKey(void)
+static unsigned char getKey(void)
 {
     unsigned char kc = keyWait();
 
@@ -114,19 +114,19 @@ unsigned char getKey(void)
     return kc;
 }
 
-void bp(void)                     /* BEEP 1 */
+static void bp(void)                     /* BEEP 1 */
 {
     if (beepOn)
         beep();
 }
 
-void buzz(void)                   /* BEEP 1,100,50 */
+static void buzz(void)                   /* BEEP 1,100,50 */
 {
     if (beepOn)
         beepTone(100, 50);
 }
 
-void pause(void)
+static void pause(void)
 {
     if (wm == WENTER) {
         while (getKey() != PC1500_KEY_ENTER)
@@ -138,13 +138,13 @@ void pause(void)
 
 /* --- PRINT ----------------------------------------------------------------- */
 
-void lclr(void)
+static void lclr(void)
 {
     llen = 0;
     line[0] = 0;
 }
 
-void laddc(char ch)
+static void laddc(char ch)
 {
     if (llen < 39) {
         line[llen++] = ch;
@@ -152,7 +152,7 @@ void laddc(char ch)
     }
 }
 
-void ladd(const char *str)
+static void ladd(const char *str)
 {
     while (*str)
         laddc(*str++);
@@ -161,7 +161,7 @@ void ladd(const char *str)
 const long p10[] = {1000000000, 100000000, 10000000, 1000000, 100000,
                     10000, 1000, 100, 10, 1};
 
-void laddn(long val)              /* STR$ */
+static void laddn(long val)              /* STR$ */
 {
     unsigned char dd, started = 0, pi;
 
@@ -182,7 +182,7 @@ void laddn(long val)              /* STR$ */
     }
 }
 
-void laddm(money hv)              /* STR$ of an amount */
+static void laddm(money hv)              /* STR$ of an amount */
 {
     if (hv < 0) {
         laddc('-');
@@ -193,27 +193,27 @@ void laddm(money hv)              /* STR$ of an amount */
         ladd(".5");
 }
 
-void out(unsigned char col)       /* CURSOR col: PRINT line */
+static void out(unsigned char col)       /* CURSOR col: PRINT line */
 {
     lcdSetCursor(col);
     lcdPutString(line);
     pause();
 }
 
-void pr(void)                     /* PRINT line */
+static void pr(void)                     /* PRINT line */
 {
     lcdClear();
     out(0);
 }
 
-void say(const char *str)         /* PRINT "..." */
+static void say(const char *str)         /* PRINT "..." */
 {
     lclr();
     ladd(str);
     pr();
 }
 
-void outStr(unsigned char col, const char *str)
+static void outStr(unsigned char col, const char *str)
 {
     lclr();
     ladd(str);
@@ -222,7 +222,7 @@ void outStr(unsigned char col, const char *str)
 
 /* --- strings ---------------------------------------------------------------- */
 
-unsigned char slen(const char *str)
+static unsigned char slen(const char *str)
 {
     unsigned char len = 0;
 
@@ -231,21 +231,21 @@ unsigned char slen(const char *str)
     return len;
 }
 
-void sapp(char *d, const char *src)
+static void sapp(char *d, const char *src)
 {
     d += slen(d);
     while ((*d++ = *src++))
         ;
 }
 
-void sappc(char *d, char ch)
+static void sappc(char *d, char ch)
 {
     d += slen(d);
     d[0] = ch;
     d[1] = 0;
 }
 
-void eMark(void)                  /* E$ = "> " + E$ */
+static void eMark(void)                  /* E$ = "> " + E$ */
 {
     unsigned char len = slen(e);
 
@@ -256,7 +256,7 @@ void eMark(void)                  /* E$ = "> " + E$ */
     e[1] = ' ';
 }
 
-unsigned char eCol(void)          /* 26-LEN E$ */
+static unsigned char eCol(void)          /* 26-LEN E$ */
 {
     return 26 - slen(e);
 }
@@ -265,7 +265,7 @@ unsigned char eCol(void)          /* 26-LEN E$ */
 
 /* INPUT prompt, at col (clearing the display first unless it follows a
    CURSOR). Returns the length typed; 0 keeps the variable's value. */
-unsigned char input(unsigned char col, unsigned char clear, const char *prompt)
+static unsigned char input(unsigned char col, unsigned char clear, const char *prompt)
 {
     unsigned char len;
 
@@ -280,7 +280,7 @@ unsigned char input(unsigned char col, unsigned char clear, const char *prompt)
     return len;
 }
 
-long val(void)                    /* VAL ibuf */
+static long val(void)                    /* VAL ibuf */
 {
     long vv = 0;
     unsigned char pi;
@@ -290,7 +290,7 @@ long val(void)                    /* VAL ibuf */
     return vv;
 }
 
-money inputMoney(unsigned char col, unsigned char clear, const char *prompt, money dflt)
+static money inputMoney(unsigned char col, unsigned char clear, const char *prompt, money dflt)
 {
     if (!input(col, clear, prompt))
         return dflt;
@@ -298,7 +298,7 @@ money inputMoney(unsigned char col, unsigned char clear, const char *prompt, mon
 }
 
 /* INPUT prompt;L$ ... IF L$="Y" */
-unsigned char inputYes(const char *prompt, unsigned char dflt)
+static unsigned char inputYes(const char *prompt, unsigned char dflt)
 {
     if (!input(0, 1, prompt))
         return dflt;
@@ -307,7 +307,7 @@ unsigned char inputYes(const char *prompt, unsigned char dflt)
 
 /* --- cards: "H" ------------------------------------------------------------- */
 
-void cardValue(char cd)
+static void cardValue(char cd)
 {
     if (cd == 'A') {
         h = 1;
@@ -323,7 +323,7 @@ void cardValue(char cd)
 }
 
 /* B=B+1, the card added to a hand string */
-void dealTo(char *hand, unsigned char comma)
+static void dealTo(char *hand, unsigned char comma)
 {
     b++;
     if (comma)
@@ -332,19 +332,19 @@ void dealTo(char *hand, unsigned char comma)
     cardValue(deck[b]);
 }
 
-unsigned char soft(unsigned char hi)   /* T(I)+(F(I)*10) */
+static unsigned char soft(unsigned char hi)   /* T(I)+(F(I)*10) */
 {
     return t[hi] + (f[hi] ? 10 : 0);
 }
 
-unsigned char is2021(void)
+static unsigned char is2021(void)
 {
     unsigned char so = soft(i);
 
     return t[i] == 20 || t[i] == 21 || so == 20 || so == 21;
 }
 
-void reveal(void)                 /* E$=E$+","+F$ */
+static void reveal(void)                 /* E$=E$+","+F$ */
 {
     sappc(e, ',');
     sappc(e, fh);
@@ -352,7 +352,7 @@ void reveal(void)                 /* E$=E$+","+F$ */
 
 /* --- the displays: "I", "I1", "Z", "CA", "GA", "HE" -------------------- */
 
-void screen(const char *pmark, unsigned int dwait)
+static void screen(const char *pmark, unsigned int dwait)
 {
     lcdClear();
     wm = 0;
@@ -364,23 +364,23 @@ void screen(const char *pmark, unsigned int dwait)
     outStr(eCol(), e);
 }
 
-void screenI(void)
+static void screenI(void)
 {
     screen("", WENTER);
 }
 
-void screenI1(void)
+static void screenI1(void)
 {
     screen(" ?", 0);
 }
 
-void screenZ(void)
+static void screenZ(void)
 {
     screen("", 1);
 }
 
 /* PRINT C$(I) (+ mark), then "> "+E$ at col, pausing for ENTER */
-void lostScreen(const char *pmark, unsigned char col)
+static void lostScreen(const char *pmark, unsigned char col)
 {
     lcdClear();
     wm = 0;
@@ -395,7 +395,7 @@ void lostScreen(const char *pmark, unsigned char col)
     out(col);
 }
 
-void cashLine(void)               /* PRINT "CASH=$";W;" (";W-X;")" */
+static void cashLine(void)               /* PRINT "CASH=$";W;" (";W-X;")" */
 {
     lclr();
     ladd("CASH=$");
@@ -406,7 +406,7 @@ void cashLine(void)               /* PRINT "CASH=$";W;" (";W-X;")" */
     pr();
 }
 
-void showCash(void)               /* "CA" */
+static void showCash(void)               /* "CA" */
 {
     wm = 75;
     if (en)
@@ -414,7 +414,7 @@ void showCash(void)               /* "CA" */
     cashLine();
 }
 
-void stat2(const char *l1, unsigned int v1, const char *l2, unsigned int v2)
+static void stat2(const char *l1, unsigned int v1, const char *l2, unsigned int v2)
 {
     lclr();
     ladd(l1);
@@ -423,7 +423,7 @@ void stat2(const char *l1, unsigned int v1, const char *l2, unsigned int v2)
     laddn(v2);
 }
 
-void stats(void)                  /* "GA" */
+static void stats(void)                  /* "GA" */
 {
     wm = 150;
     if (en)
@@ -449,7 +449,7 @@ const char *const helpLines[] = {
     "F = FUNDS DISPLAY", "G = GAME STATISTICS", "H = HIT",
     "S OR ENTER = STICK", "T = TOTAL BETS", "X = SPLIT", "* = COMMAND LIST"};
 
-void help(void)                   /* "HE" */
+static void help(void)                   /* "HE" */
 {
     unsigned char hl;
 
@@ -458,7 +458,7 @@ void help(void)                   /* "HE" */
         say(helpLines[hl]);
 }
 
-void totalBets(void)              /* PRINT "TOTAL BETS=$";STR$ ZZ */
+static void totalBets(void)              /* PRINT "TOTAL BETS=$";STR$ ZZ */
 {
     lclr();
     ladd("TOTAL BETS=$");
@@ -469,7 +469,7 @@ void totalBets(void)              /* PRINT "TOTAL BETS=$";STR$ ZZ */
 /* --- "END" ---------------------------------------------------------------- */
 
 /* unsigned 32/16 division, for the one division the game needs */
-unsigned long udiv(unsigned long nn, unsigned int dd)
+static unsigned long udiv(unsigned long nn, unsigned int dd)
 {
     unsigned long qq = 0, rr = 0;
     unsigned char bit;
@@ -486,7 +486,7 @@ unsigned long udiv(unsigned long nn, unsigned int dd)
     return qq;
 }
 
-void endGame(void)
+static void endGame(void)
 {
     unsigned int hands;
     money diff;
@@ -533,7 +533,7 @@ void endGame(void)
 
 /* --- betting: "F" ----------------------------------------------------------- */
 
-void betweenHands(void)
+static void betweenHands(void)
 {
     if (w > ww) {
         lw[0]++;
@@ -607,7 +607,7 @@ F1:
 
 /* --- "D": the questions --------------------------------------------------- */
 
-void setup(void)
+static void setup(void)
 {
     nd = 4;
     x = 400;
@@ -658,7 +658,7 @@ E:
 
 /* --- "A": the shuffle ------------------------------------------------------- */
 
-void shuffle(void)
+static void shuffle(void)
 {
     unsigned char cc, hh, jj, dd;
 
@@ -694,14 +694,14 @@ void shuffle(void)
 
 /* --- results: "L", "M", "S", "W" -------------------------------------------- */
 
-void cashAfter(void)              /* K=0:WAIT 25:PRINT "CASH=$"... */
+static void cashAfter(void)              /* K=0:WAIT 25:PRINT "CASH=$"... */
 {
     kf = 0;
     wm = 25;
     cashLine();
 }
 
-void playerBlackjack(void)        /* "L" */
+static void playerBlackjack(void)        /* "L" */
 {
     unsigned char fl;
 
@@ -722,7 +722,7 @@ void playerBlackjack(void)        /* "L" */
     cashLine();
 }
 
-void push(void)                   /* "M" */
+static void push(void)                   /* "M" */
 {
     s[2]++;
     w += z;
@@ -733,7 +733,7 @@ void push(void)                   /* "M" */
     cashLine();
 }
 
-void lose(void)                   /* "S" */
+static void lose(void)                   /* "S" */
 {
     s[1]++;
     eMark();
@@ -742,7 +742,7 @@ void lose(void)                   /* "S" */
     cashAfter();
 }
 
-void win(void)                    /* "W" */
+static void win(void)                    /* "W" */
 {
     s[0]++;
     w += z << 1;
@@ -754,7 +754,7 @@ void win(void)                    /* "W" */
 
 /* --- "J": the deal -------------------------------------------------------------- */
 
-void checkDeal(void)
+static void checkDeal(void)
 {
     n++;
     if (t[i] == 20 || soft(i) == 20)
@@ -783,7 +783,7 @@ void checkDeal(void)
 
 /* --- "Q": hit ----------------------------------------------------------------- */
 
-void hit(void)
+static void hit(void)
 {
     dealTo(c[i], 1);
     t[i] += h;
@@ -799,7 +799,7 @@ void hit(void)
 
 /* --- "U", "V": settling one hand --------------------------------------------- */
 
-void settle(void)
+static void settle(void)
 {
     if (u > 21) {
         win();
@@ -825,7 +825,7 @@ void settle(void)
 
 /* --- "T": the dealer plays --------------------------------------------------- */
 
-void dealerDraw(void)             /* B=B+1:E$=E$+","+B$(B)...:U=U+H */
+static void dealerDraw(void)             /* B=B+1:E$=E$+","+B$(B)...:U=U+H */
 {
     dealTo(e, 1);
     u += h;
@@ -833,7 +833,7 @@ void dealerDraw(void)             /* B=B+1:E$=E$+","+B$(B)...:U=U+H */
         g = 1;
 }
 
-void dealerPlay(void)
+static void dealerPlay(void)
 {
     if (u + (g ? 10 : 0) == 21) {
         reveal();
@@ -876,7 +876,7 @@ void dealerPlay(void)
 
 /* --- "DD": double down ------------------------------------------------------ */
 
-unsigned char ddRefused(unsigned char needLen)
+static unsigned char ddRefused(unsigned char needLen)
 {
     wm = 75;
     if (slen(c[i]) != needLen) {
@@ -892,7 +892,7 @@ unsigned char ddRefused(unsigned char needLen)
     return 0;
 }
 
-void doubleDown(void)
+static void doubleDown(void)
 {
     if (ddRefused(3)) {
         o = 0;
@@ -909,7 +909,7 @@ void doubleDown(void)
 
 /* --- splitting: "SX", "SH", "SHY", "SD", "SE" ---------------------------- */
 
-void splitBust(void)
+static void splitBust(void)
 {
     k[i] = BUST;
     buzz();
@@ -917,7 +917,7 @@ void splitBust(void)
     lostScreen("", 23);
 }
 
-void splitStand(void)             /* "SHY" */
+static void splitStand(void)             /* "SHY" */
 {
     lcdClear();
     wm = 0;
@@ -927,7 +927,7 @@ void splitStand(void)             /* "SHY" */
     k[i] = DONE;
 }
 
-void splitHit(void)               /* "SH" */
+static void splitHit(void)               /* "SH" */
 {
     dealTo(c[i], 1);
     t[i] += h;
@@ -941,7 +941,7 @@ void splitHit(void)               /* "SH" */
     splitBust();
 }
 
-void splitDouble(void)            /* "SD" */
+static void splitDouble(void)            /* "SD" */
 {
     if (ddRefused(6))
         return;
@@ -958,14 +958,14 @@ void splitDouble(void)            /* "SD" */
         splitBust();
 }
 
-void dealerShows(unsigned char col)    /* CLS:CURSOR col:WAIT 1:PRINT E$ */
+static void dealerShows(unsigned char col)    /* CLS:CURSOR col:WAIT 1:PRINT E$ */
 {
     lcdClear();
     wm = 1;
     outStr(col, e);
 }
 
-void settleSplit(void)            /* "SE" */
+static void settleSplit(void)            /* "SE" */
 {
     unsigned char c1, p = 0, kk;
 
@@ -1042,13 +1042,13 @@ SE10:
     cashLine();
 }
 
-unsigned char splitKeyOk(void)
+static unsigned char splitKeyOk(void)
 {
     return o == 'H' || o == PC1500_KEY_ENTER || o == 'S' || o == 'D' || o == 'F' ||
            o == 'G' || o == 'T';
 }
 
-void split(void)                  /* "SX" */
+static void split(void)                  /* "SX" */
 {
     char first;
 
@@ -1157,14 +1157,14 @@ SE:
 
 /* --- the game ------------------------------------------------------------------ */
 
-unsigned char keyOk(void)         /* line 450 */
+static unsigned char keyOk(void)         /* line 450 */
 {
     return o == 'H' || o == PC1500_KEY_ENTER || o == 'S' || o == 'D' || o == 'X' ||
            o == 'E' || o == 'F' || o == 'G' || o == 'T' || o == 'C' || o == '*';
 }
 
 /* T(I)<10 AND F(I)=0 AND T(I)<>H*2: too low to stick, so hit */
-unsigned char mustHit(void)
+static unsigned char mustHit(void)
 {
     return t[i] < 10 && f[i] == 0 && t[i] != h << 1;
 }
