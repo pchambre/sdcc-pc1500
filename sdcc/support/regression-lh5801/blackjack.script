@@ -1,0 +1,51 @@
+# device/examples/lh5801/blackjack: a standard game played with stacked
+# decks (p:_deck+[_b]+1 is the next card dealt). Money is in half
+# dollars: _w 0000017C is $190.
+#
+# The first hand's cards come from the shuffle, seeded from key timing,
+# which moves whenever the code generator changes -- so it's stood on,
+# and at the first BET prompt the money and statistics are set to what
+# losing a $10 first hand leaves.
+u:STANDARD:15000 w:500 k:ENT
+u:?:30000 w:300 k:S w:2500 k:ENT
+u:BET:10000 w:300
+p:_w:=0000017C p:_ww:=0000017C p:_d1:=0000017C p:_d2:=00000190
+p:_z:=00000014 p:_zz:=00000014 p:_s:=000000010000 p:_n:=0001 p:_mbj:=0000
+p:_lw:=00000000 p:_ll:=00010001
+
+# blackjack, paid 3:2: $190 - $10 + $25
+p:_deck+[_b]+1:AK56 k:ENT
+u:BET:10000 w:300 x:_w:0000019A
+
+# split 8,8 against T (hole 7): X1 8,T = 18 wins, X2 8,3 = 11 loses
+p:_deck+[_b]+1:88T7T3 k:ENT
+u:8,8:5000 w:300 k:X
+u:X1:5000 w:300 k:S
+u:X2:5000 w:300 k:S
+u:X1_8,T_<:5000 w:300 k:ENT
+u:X2_8,3:5000 w:300 k:ENT
+u:BET:10000 w:300 x:_w:0000019A
+
+# double down on 5,6 against 9 (hole 8), drawing T: 21 wins $20
+p:_deck+[_b]+1:5698T k:ENT
+u:5,6:5000 w:300 k:D
+u:5,6,T_<:5000 w:300 k:ENT
+u:BET:10000 w:300 x:_w:000001C2
+
+# T,9 against T,9 pushes
+p:_deck+[_b]+1:T9T9 k:ENT
+u:T,9:5000 w:300 k:S
+u:T,9_<:5000 w:300 k:ENT
+u:BET:10000 w:300 x:_w:000001C2
+
+# E ends the game, refunding this hand's bet; then the statistics
+p:_deck+[_b]+1:T7T6 k:ENT
+u:T,7:5000 w:300 k:E
+u:CASH=$225_(25):5000 w:300 k:ENT
+u:P-HANDS=5,B-JACKS=1:5000 w:300 k:ENT
+u:HANDS_W=3,L=2,D=1:5000 w:300 k:ENT
+u:MIN=$190,MAX=$225:5000 w:300 k:ENT
+u:LONG_WINS=2,LOSSES=1:5000 w:300 k:ENT
+u:TOTAL_BETS=$80:5000 w:300 k:ENT
+u:AVG._WIN/LOSS=___+4.17:5000 w:300 k:ENT
+w:1500 e:>

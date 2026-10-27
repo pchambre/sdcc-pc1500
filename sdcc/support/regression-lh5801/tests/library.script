@@ -1,0 +1,6 @@
+# keys for library.c (k:/t: already pause 250 ms after each key)
+u:KEYS?:20000 w:300
+k:A w:300 k:ENT w:300 k:CL w:300 k:5
+u:IN?:5000 w:300
+t:12 k:CL t:42 k:ENT
+u:OK:20000

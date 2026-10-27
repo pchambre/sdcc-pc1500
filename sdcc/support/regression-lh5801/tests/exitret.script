@@ -1,0 +1,4 @@
+# exit() from three calls deep is back at BASIC's prompt, marker written
+w:3000
+e:>
+x:_marker:A5
