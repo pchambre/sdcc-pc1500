@@ -61,7 +61,7 @@ lh5801_setDefaultOptions (void)
      ROM-write guard for now. */
   options.data_loc = 0x4600;
   options.code_loc = 0x4200;
-  options.stack_loc = -1;    /* set by genInitStartup unconditionally, see below */
+  options.stack_loc = -1;    /* never set: a program runs on BASIC's own stack, see genInitStartup */
 
   options.out_fmt = 'i';     /* ihx */
 }
@@ -109,10 +109,30 @@ lh5801_reg_parm (sym_link *ftype, bool reentrant)
 static bool
 lh5801_hasNativeMulFor (iCode *ic, sym_link *left, sym_link *right)
 {
-  (void) ic;
+  /* LH5801 has no multiply instruction at all -- but a multiply by a
+     constant power of two is a shift, which gen.c's genMult() emits in
+     line instead of a call to __muluchar/__mulint, when that's smaller:
+     only for 0-2 single-bit shifts after whole-byte moves (x2, x4,
+     x256, ...). Longer shifts need genMult()'s shift loop, which is
+     bigger than the ~22-byte call (measured: inlining x32 for the row
+     offset of `char c[3][32]; c[i]` grew a program). */
+  operand *lit = IC_RIGHT (ic);
+  unsigned long v;
+
   (void) left;
   (void) right;
-  return false; /* LH5801 has no multiply instruction at all. */
+  if (ic->op != '*')
+    return false;
+  if (!IS_OP_LITERAL (lit))
+    lit = IC_LEFT (ic);
+  if (!IS_OP_LITERAL (lit) || floatFromVal (OP_VALUE (lit)) <= 0)
+    return false;
+  v = ulFromVal (OP_VALUE (lit));
+  if (!v || (v & (v - 1)) || getSize (operandType (IC_RESULT (ic))) > 4)
+    return false;
+  while (v > 0xFF)
+    v >>= 8;
+  return v <= 4;
 }
 
 static bool
@@ -142,23 +162,63 @@ lh5801_genIVT (struct dbuf_s *oBuf, symbol **intTable, int intCount)
 }
 
 /*-----------------------------------------------------------------*/
-/* lh5801_genInitStartup - startup code: set S, call main, then    */
-/* loop forever (there is nothing sensible to "return" to on bare  */
-/* hardware). Modeled on STM8's inline (no separate crt0.s)        */
-/* approach -- stm8_genInitStartup in src/stm8/main.c.              */
+/* lh5801_genInitStartup - C runtime startup, first in GSINIT      */
 /*                                                                  */
-/* Phase 1 gap, deliberate: does NOT zero the DATA segment or copy  */
-/* INITIALIZER into INITIALIZED. Fine for a smoke test that never   */
-/* relies on implicit zero-initialization; revisit once codegen    */
-/* correctness beyond '=' is established.                          */
+/* A program is CALLed from BASIC at its load address: HOME is      */
+/* first in the image and holds only the __sdcc_program_startup      */
+/* label (see SDCCglue.c's TARGET_IS_LH5801 cases), so execution     */
+/* falls straight through into GSINIT, which starts here. This       */
+/* zeroes DATA (C's implicit zero-initialization of every global/     */
+/* static) and copies INITIALIZER into INITIALIZED (every global/      */
+/* static with an initial value), using sdld's own s_<area>/l_<area>    */
+/* symbols. Every module's own GSINIT code (static locals with an        */
+/* initializer) follows, and GSFINAL then calls main and returns to       */
+/* BASIC -- so this must be the *first* GSINIT code in the link, i.e.     */
+/* the module defining main must be linked first (build-lh5801.sh does). */
+/*                                                                        */
+/* S is left alone: BASIC's own stack is live, and the final RTN has to     */
+/* pop BASIC's own return address. Y (BASIC's text pointer) and U are       */
+/* saved for BASIC around the whole program; GSFINAL restores them.        */
+/* Runs again on every CALL, so a program can be re-run from scratch.     */
 /*-----------------------------------------------------------------*/
 static void
 lh5801_genInitStartup (FILE *of)
 {
-  fprintf (of, "\tldi\ts,0x47ff\n");
-  fprintf (of, "\tsjp\t_main\n");
-  fprintf (of, "__sdcc_lh5801_forever:\n");
-  fprintf (of, "\tbch\t__sdcc_lh5801_forever\n");
+  fprintf (of, "__sdcc_gsinit_startup::\n");
+  fprintf (of, "\tpsh\ty\n");
+  fprintf (of, "\tpsh\tu\n");
+  fprintf (of, "\tldi\txh, >s_DATA\n");
+  fprintf (of, "\tldi\txl, <s_DATA\n");
+  fprintf (of, "\tldi\tyh, >l_DATA\n");
+  fprintf (of, "\tldi\tyl, <l_DATA\n");
+  fprintf (of, "__sdcc_lh5801_zero_loop:\n");
+  fprintf (of, "\tlda\tyh\n");
+  fprintf (of, "\tbzr\t__sdcc_lh5801_zero_byte\n");
+  fprintf (of, "\tlda\tyl\n");
+  fprintf (of, "\tbzs\t__sdcc_lh5801_zero_done\n");
+  fprintf (of, "__sdcc_lh5801_zero_byte:\n");
+  fprintf (of, "\tldi\ta, 0x00\n");
+  fprintf (of, "\tsin\tx\n");
+  fprintf (of, "\tdec\ty\n");
+  fprintf (of, "\tbch\t__sdcc_lh5801_zero_loop\n");
+  fprintf (of, "__sdcc_lh5801_zero_done:\n");
+  fprintf (of, "\tldi\txh, >s_INITIALIZER\n");
+  fprintf (of, "\tldi\txl, <s_INITIALIZER\n");
+  fprintf (of, "\tldi\tyh, >s_INITIALIZED\n");
+  fprintf (of, "\tldi\tyl, <s_INITIALIZED\n");
+  fprintf (of, "\tldi\tuh, >l_INITIALIZER\n");
+  fprintf (of, "\tldi\tul, <l_INITIALIZER\n");
+  fprintf (of, "__sdcc_lh5801_copy_loop:\n");
+  fprintf (of, "\tlda\tuh\n");
+  fprintf (of, "\tbzr\t__sdcc_lh5801_copy_byte\n");
+  fprintf (of, "\tlda\tul\n");
+  fprintf (of, "\tbzs\t__sdcc_lh5801_copy_done\n");
+  fprintf (of, "__sdcc_lh5801_copy_byte:\n");
+  fprintf (of, "\tlin\tx\n");
+  fprintf (of, "\tsin\ty\n");
+  fprintf (of, "\tdec\tu\n");
+  fprintf (of, "\tbch\t__sdcc_lh5801_copy_loop\n");
+  fprintf (of, "__sdcc_lh5801_copy_done:\n");
 }
 
 /* isTargetKeyword() (SDCCglue.c) returns false for every __-prefixed

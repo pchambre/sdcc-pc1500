@@ -1,41 +1,45 @@
 #!/bin/bash
-# build-lh5801.sh - compile a C source file for the PC-1500 (LH5801 SDCC
-# port), link it against the ROM-calling runtime library
-# (device/lib/lh5801/) plus the generic stdio support printf() needs
-# (device/lib/printf_large.c and friends, see STDIO_SOURCES below), and
-# emit a padding-free flat binary ready to load onto a real PC-1500 (or
+# build-lh5801.sh - compile C source files for the PC-1500 (LH5801 SDCC
+# port), link them against the PC-1500 runtime library, and emit a
+# padding-free flat binary ready to load onto a real PC-1500 (or
 # pc1500emu) at a fixed address.
 #
 # Paul Chambre, 2026
 #
-# Usage: build-lh5801.sh <source.c> [base_addr_hex]
+# Usage: build-lh5801.sh <source.c> [more.c ...] [base_addr_hex]
 #
 #   base_addr_hex   load address, in hex, no "0x" prefix (default: 4400).
-#                   This must be real, writable RAM on a PC-1500 -- 4000-
-#                   47FF is always present; 4800-6FFF needs the CE-158
-#                   extension RAM module. See device/lib/lh5801/*.asm and
-#                   docs/pc1500_hardware_reference.md (pc1500emu project)
-#                   for the memory map this assumes.
+#                   This must be real, writable RAM on a PC-1500 that BASIC
+#                   isn't using -- 4000-47FF is always present; 4800-6FFF
+#                   needs the CE-158 extension RAM module. See
+#                   device/lib/lh5801/*.asm and docs/pc1500_hardware_reference.md
+#                   (pc1500emu project) for the memory map this assumes.
 #
-# Output: <source_basename>-<base>-<call_addr>-pc1500.bin in the current
-# directory, where <call_addr> is _main's real address -- that's the
-# address to CALL from BASIC (not <base>, which is just where HOME/the
-# startup trampoline lands; see the CALL-address discussion this tool's
-# design came out of).
+# Output: <first_source_basename>-<base>-pc1500.bin (and its .map) in the
+# current directory. CALL it from BASIC at <base> itself: HOME (the
+# image's first area) holds the startup code's entry label, which falls
+# through into GSINIT -- zero DATA, copy INITIALIZER into INITIALIZED, run
+# every module's static initializers -- and then GSFINAL calls main() and
+# returns to BASIC (see src/lh5801/main.c's lh5801_genInitStartup()).
 #
-# Why three link passes: HOME/GSINIT/GSFINAL are fixed-size startup
-# boilerplate, but CONST (string literals) and CODE both vary per
-# program, and sdld places any *unbased* area by simple encounter-order
-# address inheritance across the whole link (confirmed directly: an
-# unbased CODE area silently inherits whatever address an earlier-
-# encountered DATA area happened to leave the "current pointer" at,
-# which is how the very first version of this workflow ended up with a
-# multi-KB gap between CONST and CODE). Explicitly basing CODE right
-# after CONST, and DATA right after CODE, is the only way to get a
-# genuinely contiguous, gap-free image -- so pass 1 discovers
-# HOME+GSINIT+GSFINAL+CONST's real total size, pass 2 (now that CODE is
-# based correctly) discovers CODE's real size, and pass 3 produces the
-# real output with DATA based right after that.
+# The runtime is a library, not a fixed list of objects: every
+# device/lib/lh5801/*.asm and *.c file, plus the generic C runtime
+# helpers in RUNTIME_SOURCES below (stdio, integer multiply/divide,
+# strings, rand), is compiled once into a cached directory and listed in
+# a plain-text sdld library (one .rel name per line, see
+# sdas/linksrc/lklib.c), so the linker only pulls in the modules a
+# program actually references. The cache is rebuilt per file whenever a
+# source, pc1500.h, the compiler or the assembler is newer than its .rel.
+#
+# Layout: two link passes. Pass 1 bases only HOME, to learn every area's
+# real size (sizes don't depend on addresses -- every instruction this
+# port emits has a fixed size). Pass 2 bases every area explicitly, back
+# to back: HOME, GSINIT, GSFINAL, CONST, INITIALIZER, CODE (the image),
+# then the RAM-only areas DATA and INITIALIZED. sdld places any
+# *unbased* area by encounter-order address inheritance across the whole
+# link (confirmed directly: an unbased CODE area silently inherited
+# whatever address an earlier-encountered DATA area happened to leave the
+# "current pointer" at), so nothing is left unbased.
 
 set -euo pipefail
 
@@ -55,15 +59,21 @@ DEVICE_INCLUDE="$SDCC_ROOT/device/include"
 DEVICE_INCLUDE_LH5801="$SDCC_ROOT/device/include/lh5801"
 DEVICE_LIB_LH5801="$SDCC_ROOT/device/lib/lh5801"
 DEVICE_LIB="$SDCC_ROOT/device/lib"
-# Generic (non-port-specific) C-source stdio support printf() needs --
-# unlike device/lib/lh5801/*.asm, sdcc doesn't pull these in on its own,
-# and they're C source (compiled via sdcc -S, same as the user's own
-# program), not pre-existing .asm -- confirmed live: without these,
-# linking any program that calls printf() fails with "ASlink-Warning-
-# Undefined Global _printf". Linked in unconditionally for every build,
-# same as the full device/lib/lh5801 runtime already is below, whether or
-# not a given program actually calls printf.
-STDIO_SOURCES=(printf_large vprintf strlen _mulint _muluchar)
+LIB_CACHE="$SDCC_ROOT/device/lib/build/lh5801"
+LIB_NAME="pc1500"
+# Generic (non-port-specific) C runtime sources from device/lib -- sdcc
+# doesn't pull these in on its own. All confirmed to compile and assemble
+# with this backend.
+RUNTIME_SOURCES=(
+  printf_large vprintf sprintf strlen
+  _mulint _muluchar _mulschar _mullong
+  _divuint _divsint _moduint _modsint
+  _divuchar _moduchar _divschar _modschar
+  _divulong _divslong _modulong _modslong
+  _strcpy _strcat _strcmp _strncpy _strncmp _strchr
+  _memset memcpy _memcmp _memmove
+  abs rand __itoa
+)
 
 DEFAULT_BASE="4400"
 EXT_RAM_START_HEX="4800"  # CE-158 extension RAM boundary -- see warning below
@@ -74,131 +84,166 @@ RESERVE_AREA_END_HEX="40C4"  # BASIC firmware's reserve area (manual 5-3-6):
                               # hardware (see pc1500emu project notes)
 
 usage() {
-  echo "Usage: $(basename "$0") <source.c> [base_addr_hex]" >&2
+  echo "Usage: $(basename "$0") <source.c> [more.c ...] [base_addr_hex]" >&2
   exit 1
 }
 
 [ $# -ge 1 ] || usage
-SRC="$1"
-BASE_HEX="${2:-$DEFAULT_BASE}"
-
-[ -f "$SRC" ] || { echo "error: no such file: $SRC" >&2; exit 1; }
-case "$SRC" in
-  *.c) ;;
-  *) echo "error: expected a .c source file, got: $SRC" >&2; exit 1 ;;
-esac
+SRCS=()
+BASE_HEX="$DEFAULT_BASE"
+for arg in "$@"; do
+  case "$arg" in
+    *.c)
+      [ -f "$arg" ] || { echo "error: no such file: $arg" >&2; exit 1; }
+      SRCS+=("$(cd "$(dirname "$arg")" && pwd)/$(basename "$arg")")
+      ;;
+    *)
+      [[ "$arg" =~ ^[0-9A-Fa-f]{1,4}$ ]] ||
+        { echo "error: expected a .c file or a hex base address, got: $arg" >&2; exit 1; }
+      BASE_HEX="$arg"
+      ;;
+  esac
+done
+[ ${#SRCS[@]} -ge 1 ] || usage
 
 for tool in "$SDCC" "$ASLH5801" "$SDLD" "$MAKEBIN"; do
   [ -x "$tool" ] || { echo "error: missing or not executable: $tool" >&2; exit 1; }
 done
 
-if [ $((16#$BASE_HEX)) -le $((16#$RESERVE_AREA_END_HEX)) ]; then
-  echo "warning: base address 0x$BASE_HEX overlaps 0x0000-0x$RESERVE_AREA_END_HEX," \
-       "the BASIC firmware's reserve area -- this is live interpreter" \
-       "state on a bare PC-1500 (manual section 5-3-6), not free RAM," \
-       "even though it's physically writable. Loading here will corrupt" \
-       "BASIC. Use 0x$(printf '%04X' $(( 16#$RESERVE_AREA_END_HEX + 1 ))) or higher." >&2
+if [ $((16#$BASE_HEX)) -ge $((16#4000)) ] && [ $((16#$BASE_HEX)) -le $((16#$RESERVE_AREA_END_HEX)) ]; then
+  echo "warning: base address 0x$BASE_HEX overlaps 0x4000-0x$RESERVE_AREA_END_HEX," \
+       "the BASIC firmware's reserve area on a bare PC-1500 -- this is live" \
+       "interpreter state (manual section 5-3-6), not free RAM, even though" \
+       "it's physically writable. Loading here will corrupt BASIC." >&2
 fi
 
 OUTDIR="$(pwd)"
-SRC_ABS="$(cd "$(dirname "$SRC")" && pwd)/$(basename "$SRC")"
-BASENAME="$(basename "$SRC" .c)"
+BASENAME="$(basename "${SRCS[0]}" .c)"
 
 WORKDIR="$(mktemp -d)"
 trap 'rm -rf "$WORKDIR"' EXIT
+
+compile_c() {  # compile_c <src.c> <out_dir> -> <out_dir>/<name>.rel
+  local src="$1" out="$2" name
+  name="$(basename "$src" .c)"
+  "$SDCC" -S -mlh5801 -I"$DEVICE_INCLUDE" -I"$DEVICE_INCLUDE_LH5801" "$src" -o "$out/$name.asm"
+  "$ASLH5801" -logs "$out/$name.asm" >/dev/null
+}
+
+# --- the runtime library (cached) --------------------------------------
+mkdir -p "$LIB_CACHE"
+LIB_SRCS=("$DEVICE_LIB_LH5801"/*.asm)
+for f in "$DEVICE_LIB_LH5801"/*.c; do [ -e "$f" ] && LIB_SRCS+=("$f"); done
+for f in "${RUNTIME_SOURCES[@]}"; do LIB_SRCS+=("$DEVICE_LIB/$f.c"); done
+: > "$LIB_CACHE/$LIB_NAME.lib.new"
+for src in "${LIB_SRCS[@]}"; do
+  name="${src##*/}"; name="${name%.*}"
+  rel="$LIB_CACHE/$name.rel"
+  if [ ! -f "$rel" ] || [ "$src" -nt "$rel" ] || [ "$SDCC_ROOT/src/sdcc" -nt "$rel" ] ||
+     [ "$ASLH5801" -nt "$rel" ] || [ "$DEVICE_INCLUDE_LH5801/pc1500.h" -nt "$rel" ]; then
+    case "$src" in
+      *.asm) "$ASLH5801" -logs -o "$rel" "$src" >/dev/null ;;
+      *.c) compile_c "$src" "$LIB_CACHE" ;;
+    esac
+  fi
+  echo "$name" >> "$LIB_CACHE/$LIB_NAME.lib.new"
+done
+mv "$LIB_CACHE/$LIB_NAME.lib.new" "$LIB_CACHE/$LIB_NAME.lib"
+
+# --- the program's own sources ----------------------------------------
+# The module defining main() goes first: its GSINIT holds the startup
+# code, which has to run before any other module's static initializers.
+REL_ARGS=()
+for src in "${SRCS[@]}"; do
+  compile_c "$src" "$WORKDIR"
+  name="$(basename "$src" .c)"
+  if grep -q '^_main:' "$WORKDIR/$name.asm"; then
+    REL_ARGS=("$name.rel" "${REL_ARGS[@]+"${REL_ARGS[@]}"}")
+  else
+    REL_ARGS+=("$name.rel")
+  fi
+done
+grep -q '^_main:' "$WORKDIR/${REL_ARGS[0]%.rel}.asm" ||
+  { echo "error: no source file defines main()" >&2; exit 1; }
+
 cd "$WORKDIR"
 
 hex_to_dec() { echo $((16#$1)); }
 BASE_DEC="$(hex_to_dec "$BASE_HEX")"
 
-# --- compile + assemble the user's program -----------------------------
-cp "$SRC_ABS" "$BASENAME.c"
-"$SDCC" -S -mlh5801 -I"$DEVICE_INCLUDE" -I"$DEVICE_INCLUDE_LH5801" "$BASENAME.c" -o "$BASENAME.asm"
-"$ASLH5801" -logs "$BASENAME.asm" >/dev/null
-
-# --- assemble the ROM-calling runtime library ---------------------------
-REL_ARGS=("$BASENAME.rel")
-for asm in "$DEVICE_LIB_LH5801"/*.asm; do
-  libbase="$(basename "$asm" .asm)"
-  "$ASLH5801" -logs -o "$WORKDIR/$libbase.rel" "$asm" >/dev/null
-  REL_ARGS+=("$libbase.rel")
-done
-
-# --- compile + assemble the stdio support printf() needs ----------------
-for stdiosrc in "${STDIO_SOURCES[@]}"; do
-  "$SDCC" -S -mlh5801 -I"$DEVICE_INCLUDE" -I"$DEVICE_INCLUDE_LH5801" "$DEVICE_LIB/$stdiosrc.c" -o "$stdiosrc.asm"
-  "$ASLH5801" -logs "$stdiosrc.asm" >/dev/null
-  REL_ARGS+=("$stdiosrc.rel")
-done
-
-# area_size <map_file> <area_name> -> hex size (0 if the area doesn't
-# appear in the map at all, e.g. a program with no string literals has
-# no real CONST content).
+# area_size <map_file> <area_name> -> size in decimal (0 if the area
+# doesn't appear in the map at all, e.g. a program with no string
+# literals has no CONST content).
 area_size() {
-  local map="$1" area="$2" size
-  size="$(awk -v a="$area" '$1==a{print $3}' "$map" | head -1)"
-  [ -n "$size" ] || size="00000000"
-  echo "$size"
+  local size
+  # The size column is 8 hex digits -- unlike the "User Base Address
+  # Definitions" section's own "HOME = 0x4400" lines, which also start
+  # with the area name.
+  size="$(awk -v a="$2" '$1==a && $3 ~ /^[0-9A-Fa-f]+$/ {print $3}' "$1" | head -1)"
+  echo $((16#${size:-0}))
 }
 
-write_lnk() {
-  # write_lnk <name> <home_base_hex> [code_base_hex] [data_base_hex]
-  local name="$1" home="$2" code="${3:-}" data="${4:-}"
+write_lnk() {  # write_lnk <name> <area=hex_base>...
+  local name="$1"; shift
   {
     echo "-muwx"
     echo "-i $name"
-    echo "-b HOME = 0x$home"
-    [ -n "$code" ] && echo "-b CODE = 0x$code"
-    [ -n "$data" ] && echo "-b DATA = 0x$data"
+    for b in "$@"; do echo "-b ${b%%=*} = 0x${b#*=}"; done
+    echo "-k $LIB_CACHE"
+    echo "-l $LIB_NAME"
     for f in "${REL_ARGS[@]}"; do echo "$f"; done
     echo
     echo "-e"
   } > "$name.lnk"
 }
 
-# --- pass 1: discover HOME+GSINIT+GSFINAL+CONST's real total size ------
-write_lnk pass1 "$BASE_HEX"
+# --- pass 1: every area's real size ------------------------------------
+write_lnk pass1 "HOME=$BASE_HEX"
 "$SDLD" -nf pass1 >/dev/null
 
-home_sz="$(area_size pass1.map HOME)"
-gsinit_sz="$(area_size pass1.map GSINIT)"
-gsfinal_sz="$(area_size pass1.map GSFINAL)"
-const_sz="$(area_size pass1.map CONST)"
-prelude_sz=$(( 16#$home_sz + 16#$gsinit_sz + 16#$gsfinal_sz + 16#$const_sz ))
-code_base_dec=$(( BASE_DEC + prelude_sz ))
-code_base_hex="$(printf '%04X' "$code_base_dec")"
-
-# --- pass 2: CODE now based correctly -- discover its real total size --
-write_lnk pass2 "$BASE_HEX" "$code_base_hex"
+# --- pass 2: every area based explicitly, back to back -----------------
+# Not SSEG: SDCCglue.c's one-byte __start__stack placeholder is never
+# used (a program runs on BASIC's own stack), emits no bytes, and sdld
+# keeps it at 0 whatever base it's given.
+LAYOUT=(HOME GSINIT GSFINAL CONST INITIALIZER CODE DATA INITIALIZED)
+BASES=()
+addr=$BASE_DEC
+image_end=$addr
+for area in "${LAYOUT[@]}"; do
+  BASES+=("$area=$(printf '%04X' "$addr")")
+  addr=$(( addr + $(area_size pass1.map "$area") ))
+  [ "$area" = CODE ] && image_end=$addr
+done
+ram_end=$addr
+write_lnk pass2 "${BASES[@]}"
 "$SDLD" -nf pass2 >/dev/null
 
-code_sz="$(area_size pass2.map CODE)"
-data_base_dec=$(( code_base_dec + 16#$code_sz ))
-data_base_hex="$(printf '%04X' "$data_base_dec")"
+for area in "${LAYOUT[@]}"; do
+  [ "$(area_size pass1.map "$area")" = "$(area_size pass2.map "$area")" ] ||
+    { echo "error: area $area changed size between link passes" >&2; exit 1; }
+done
 
-# --- pass 3: final, fully contiguous link ------------------------------
-write_lnk pass3 "$BASE_HEX" "$code_base_hex" "$data_base_hex"
-"$SDLD" -nf pass3 >/dev/null
+# -s 65536: makebin's buffer defaults to 32K, too small for an image
+# that ends above 7FFFH.
+"$MAKEBIN" -p -s 65536 -o "$BASE_DEC" pass2.ihx pass2.bin >/dev/null
 
-main_addr="$(awk '$2=="_main"{print $1; exit}' pass3.map)"
-[ -n "$main_addr" ] || { echo "error: _main not found in link map -- does $SRC define main()?" >&2; exit 1; }
-main_hex="$(echo "$main_addr" | sed 's/^0*//')"
-[ -n "$main_hex" ] || main_hex="0"
-
-"$MAKEBIN" -p -o "$BASE_DEC" pass3.ihx pass3.bin >/dev/null
-
-data_sz="$(area_size pass3.map DATA)"
-data_end_dec=$(( data_base_dec + 16#$data_sz ))
-if [ "$data_end_dec" -gt "$(hex_to_dec "$EXT_RAM_START_HEX")" ]; then
-  echo "warning: static data extends to 0x$(printf '%04X' "$data_end_dec")," \
+if [ "$BASE_DEC" -lt "$(hex_to_dec "$EXT_RAM_START_HEX")" ] &&
+   [ "$ram_end" -gt "$(hex_to_dec "$EXT_RAM_START_HEX")" ]; then
+  echo "warning: the program's RAM extends to 0x$(printf '%04X' "$ram_end")," \
        "past 0x$EXT_RAM_START_HEX -- this program needs the CE-158" \
        "extension RAM module on real hardware (or emulator" \
        "Bus::setExtRam4800Size())." >&2
 fi
 
-OUT="$OUTDIR/${BASENAME}-${BASE_HEX}-${main_hex}-pc1500.bin"
-cp pass3.bin "$OUT"
+OUT="$OUTDIR/${BASENAME}-${BASE_HEX}-pc1500"
+cp pass2.bin "$OUT.bin"
+cp pass2.map "$OUT.map"
 
-BIN_SIZE="$(stat -c%s "$OUT" 2>/dev/null || stat -f%z "$OUT")"
-echo "$OUT"
-echo "  size: $BIN_SIZE bytes, load at 0x$BASE_HEX, call at 0x$main_hex"
+BIN_SIZE="$(stat -c%s "$OUT.bin" 2>/dev/null || stat -f%z "$OUT.bin")"
+echo "$OUT.bin"
+echo "  image: $BIN_SIZE bytes at 0x$BASE_HEX-0x$(printf '%04X' $(( image_end - 1 )))," \
+     "RAM to 0x$(printf '%04X' $(( ram_end - 1 ))); CALL &$BASE_HEX"
+# BASIC's NEW <address> moves BASIC's program area up, reserving everything
+# below it -- the program's RAM-only areas included, which the startup
+# code zeroes on every CALL.
+echo "  reserve it first with NEW &$(printf '%04X' "$ram_end") (before loading it)"
