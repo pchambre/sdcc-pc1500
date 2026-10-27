@@ -60,6 +60,8 @@ instSize (const char *line)
       !strcmp (mn, "sie") || !strcmp (mn, "rie") || !strcmp (mn, "hlt") || !strcmp (mn, "am0") ||
       !strcmp (mn, "am1") || !strcmp (mn, "sdp") || !strcmp (mn, "rdp"))
     return 2;                         /* FD-prefixed */
+  if ((!strcmp (mn, "inc") || !strcmp (mn, "dec")) && ops[0] && ops[1] == 'h')
+    return 2;                         /* INC/DEC XH/YH/UH: FD-prefixed */
   if (ops[0] == '#' && ops[1] == '(')
     return strstr (ops, "),") ? 5 : 4;  /* ME1 (I/O space), FD-prefixed */
   if (ops[0] == '(' && ops[2] != ')')
@@ -908,6 +910,45 @@ genAddrOf (const iCode *ic)
 /* Widening (result bigger than source): see genWiden().             */
 /*-----------------------------------------------------------------*/
 
+/* result = the constant `lit`, byte i being the constant's own byte i at
+   the result's width (so narrowing and widening both come out right):
+   into a register half with LDI directly, not through A; into memory
+   through A, loaded only when a byte differs from the one before -- and a
+   lone 0 or FFH byte with ANI/ORI (ab),i instead (4 bytes, not 5). */
+static void
+storeLiteral (const asmop *result, const asmop *lit)
+{
+  int size = result->size;
+  int inA = -1;
+  int i;
+
+  for (i = 0; i < size; i++)
+    {
+      unsigned char v = litByte (lit, i, size);
+      int r = aopReg (result, i);
+
+      if (r > LH5801_REG_A)
+        {
+          emit ("ldi", "%s, 0x%02x", regName[r], v);
+          continue;
+        }
+      if (r < 0 && result->type == AOP_DIR && size == 1 && (v == 0x00 || v == 0xFF))
+        {
+          char buf[128];
+
+          dirAddr (buf, sizeof (buf), result, i);
+          emit (v ? "ori" : "ani", "(%s), 0x%02x", buf, v);
+          continue;
+        }
+      if (v != inA)
+        {
+          emit ("ldi", "a, 0x%02x", v);
+          inA = v;
+        }
+      storeA (result, i);
+    }
+}
+
 /* Stores `right` into the wider `result`: an unsigned source zero-
    extends, a signed one sign-extends (its sign bit copied into every
    new high-order byte), and a literal is simply written at the result's
@@ -924,11 +965,7 @@ genWiden (operand *result, operand *right)
 
   if (right->aop->type == AOP_LIT)
     {
-      for (i = 0; i < resultSize; i++)
-        {
-          emit ("ldi", "a, 0x%02x", litByte (right->aop, i, resultSize));
-          storeA (result->aop, i);
-        }
+      storeLiteral (result->aop, right->aop);
       return;
     }
 
@@ -971,7 +1008,9 @@ genCast (const iCode *ic)
   resultSize = result->aop->size;
   rightSize = right->aop->size;
 
-  if (resultSize <= rightSize)
+  if (right->aop->type == AOP_LIT)
+    storeLiteral (result->aop, right->aop);
+  else if (resultSize <= rightSize)
     {
       int srcOffset = rightSize - resultSize;
 
@@ -1137,7 +1176,9 @@ genAssign (const iCode *ic)
      truncation semantics (keep the *trailing*, least-significant bytes,
      per this port's big-endian byte order). Mirrors genCast()'s exact
      algorithm since the needed behavior is identical either way. */
-  if (resultSize <= rightSize)
+  if (right->aop->type == AOP_LIT)
+    storeLiteral (result->aop, right->aop);
+  else if (resultSize <= rightSize)
     {
       int srcOffset = rightSize - resultSize;
 
@@ -1248,6 +1289,8 @@ genPointerSet (const iCode *ic)
 /* confirmed via the sdas mnemonic table that ADC/SBC themselves     */
 /* have no immediate form at all (memory-operand only).              */
 /*-----------------------------------------------------------------*/
+static bool genAddSubInPlace (const asmop *result, const asmop *left, const asmop *right, bool isSub);
+
 static void
 genAddSub (const iCode *ic, bool isSub)
 {
@@ -1261,6 +1304,14 @@ genAddSub (const iCode *ic, bool isSub)
   aopOp (right);
   aopOp (result);
   aopToDir (right, 0);
+
+  if (genAddSubInPlace (result->aop, left->aop, right->aop, isSub))  /* x += k in place */
+    {
+      freeAsmop (left);
+      freeAsmop (right);
+      freeAsmop (result);
+      return;
+    }
 
   size = result->aop->size;
   /* AOP_LIT operands are exempt: litByte()/byteOfVal() extract whatever
@@ -1312,6 +1363,133 @@ genAddSub (const iCode *ic, bool isSub)
   freeAsmop (left);
   freeAsmop (right);
   freeAsmop (result);
+}
+
+/* The IFX that a `x & k` bit test (genBitwise()) generates itself, or
+   NULL: an AND of a variable with a constant that has exactly one nonzero
+   byte, whose result nothing but the IFX after it uses (ifxForOp()). Also
+   ralloc2.cc's extra_ic_generated() -- the two must agree, or the IFX is
+   generated twice or not at all. */
+iCode *
+lh5801_bitTest (const iCode *ic)
+{
+  operand *left = IC_LEFT (ic);
+  operand *right = IC_RIGHT (ic);
+  int size, i, bytes = 0;
+
+  if ((ic->op != '&' && ic->op != BITWISEAND) || !IS_OP_LITERAL (right) || !IS_SYMOP (left) ||
+      isRemat (left) || !IS_SYMOP (IC_RESULT (ic)))
+    return NULL;
+  size = getSize (operandType (left));
+  if (size < 1 || size > 4)
+    return NULL;
+  for (i = 0; i < size; i++)
+    if (byteOfVal (OP_VALUE (right), i))
+      bytes++;
+  if (bytes != 1)
+    return NULL;
+  return ifxForOp (IC_RESULT (ic), ic);
+}
+
+/* Do two operands name the very same storage? */
+static bool
+sameStorage (const asmop *a, const asmop *b)
+{
+  int i;
+
+  if (a->type != b->type || a->size != b->size)
+    return false;
+  if (a->type == AOP_DIR)
+    return !strcmp (a->u.dir, b->u.dir);
+  if (a->type == AOP_REG)
+    {
+      for (i = 0; i < a->size; i++)
+        if (a->u.regs[i] != b->u.regs[i])
+          return false;
+      return true;
+    }
+  return false;
+}
+
+/* `x = x + k` / `x = x - k` for a constant k, changing x where it is,
+   without going through A: in memory ADI (ab),i, then -- for a wider
+   value -- the carry passed up a byte at a time (k's upper bytes must be
+   all 0, adding 1 on a carry, or all FFH, subtracting 1 when there was
+   none: memory ADI takes no carry in, but sets it); a value in a register
+   half INC/DEC (1 byte, 2 for an H half); a 2-byte value filling a pointer
+   register INC/DEC of the pair (1 byte). False when none of those fits
+   (or wouldn't be smaller); the caller then does the ordinary add. */
+static bool
+genAddSubInPlace (const asmop *result, const asmop *left, const asmop *right, bool isSub)
+{
+  int size = result->size;
+  unsigned long k, mask;
+  char pair;
+  int i;
+
+  if (right->type != AOP_LIT || !sameStorage (result, left) || size > 4)
+    return false;
+
+  mask = size == 4 ? 0xFFFFFFFFul : (1ul << (8 * size)) - 1;
+  k = ulFromVal (right->u.lit);
+  if (isSub)
+    k = 0 - k;
+  k &= mask;
+  if (k == 0)
+    return true;
+
+  if (result->type == AOP_REG)
+    {
+      unsigned long neg = (0 - k) & mask;
+      int n;
+
+      pair = regPair (result);
+      if (size == 1 || pair)
+        {
+          if (k <= (pair ? 3u : 2u))
+            n = (int) k;
+          else if (neg <= (pair ? 3u : 2u))
+            n = -(int) neg;
+          else
+            return false;
+          for (i = 0; i < (n < 0 ? -n : n); i++)
+            {
+              if (pair)
+                emit (n < 0 ? "dec" : "inc", "%c", pair);
+              else
+                emit (n < 0 ? "dec" : "inc", "%s", regName[result->u.regs[0]]);
+            }
+          return true;
+        }
+      return false;
+    }
+
+  if (result->type == AOP_DIR)
+    {
+      unsigned long upper = k >> 8;
+      unsigned long ones = mask >> 8;
+      char buf[128];
+      symbol *done;
+
+      if (size > 1 && upper != 0 && upper != ones)
+        return false;
+      dirAddr (buf, sizeof (buf), result, size - 1);
+      emit ("adi", "(%s), 0x%02x", buf, (unsigned) (k & 0xFF));
+      if (size == 1)
+        return true;
+      done = newiTempLabel (NULL);
+      for (i = size - 2; i >= 0; i--)
+        {
+          /* adding: a carry means one more up; subtracting (k's upper
+             bytes FFH): no carry means a borrow, one less up */
+          emit (upper ? "bcs" : "bcr", "!tlabel", labelKey2num (done->key));
+          dirAddr (buf, sizeof (buf), result, i);
+          emit ("adi", "(%s), 0x%02x", buf, upper ? 0xFF : 0x01);
+        }
+      emitLbl (done);
+      return true;
+    }
+  return false;
 }
 
 /*-----------------------------------------------------------------*/
@@ -1671,6 +1849,7 @@ genBitwise (const iCode *ic)
   int size, i;
   const char *memMnemonic;
   const char *immMnemonic;
+  iCode *ifx;
 
   switch (ic->op)
     {
@@ -1691,6 +1870,63 @@ genBitwise (const iCode *ic)
   aopOp (right);
   aopOp (result);
   aopToDir (right, 0);
+
+  /* `if (x & k)`: BII tests the one byte of x the mask touches -- in
+     memory directly, else in A -- and the IFX branches on Z; the result
+     is never stored (lh5801_bitTest()). */
+  if ((ifx = lh5801_bitTest (ic)))
+    {
+      int lsize = left->aop->size;
+      unsigned char m = 0;
+      char buf[128];
+
+      for (i = 0; i < lsize; i++)
+        if ((m = litByte (right->aop, i, lsize)))
+          break;
+      if (left->aop->type == AOP_DIR)
+        {
+          dirAddr (buf, sizeof (buf), left->aop, i);
+          emit ("bii", "(%s), 0x%02x", buf, m);
+        }
+      else
+        {
+          loadA (left->aop, i, lsize);
+          emit ("bii", "a, #0x%02x", m);
+        }
+      if (IC_TRUE (ifx))
+        emitLongCondBranch ("bzs", IC_TRUE (ifx));
+      else
+        emitLongCondBranch ("bzr", IC_FALSE (ifx));
+      ifx->generated = 1;
+      freeAsmop (left);
+      freeAsmop (right);
+      freeAsmop (result);
+      return;
+    }
+
+  /* `x &= k` / `x |= k` with x in memory: ANI/ORI (ab),i on each byte the
+     mask changes, nothing through A. */
+  if (ic->op != '^' && right->aop->type == AOP_LIT && result->aop->type == AOP_DIR &&
+      sameStorage (result->aop, left->aop))
+    {
+      bool isAnd = ic->op != '|';
+      char buf[128];
+
+      size = result->aop->size;
+      for (i = 0; i < size; i++)
+        {
+          unsigned char m = litByte (right->aop, i, size);
+
+          if (m == (isAnd ? 0xFF : 0x00))
+            continue;
+          dirAddr (buf, sizeof (buf), result->aop, i);
+          emit (isAnd ? "ani" : "ori", "(%s), 0x%02x", buf, m);
+        }
+      freeAsmop (left);
+      freeAsmop (right);
+      freeAsmop (result);
+      return;
+    }
 
   /* Same AOP_LIT-size exemption as genAddSub()/genCmp(). */
   if (left->aop->type != AOP_LIT)
