@@ -19,8 +19,13 @@ different here.
   tree-decomposition register allocator (`ralloc2.cc`) finds that smaller,
   everything else at a fixed, directly-addressed memory location; A is
   only scratch. `--oldralloc` puts every value in memory, the original
-  ("phase-1") design. See `gen.c`'s and `ralloc2.cc`'s own header
-  comments for the design rationale.
+  ("phase-1") design. Function locals that need memory are overlaid as a
+  compiled stack per module (`overlay.c`): functions that are never active
+  at the same time share it. A function that isn't `static` keeps memory of
+  its own if it calls the library or another module (which could call it
+  back), so declaring helpers `static` saves RAM; `--lh5801-no-overlay`
+  turns overlaying off. See `gen.c`'s, `ralloc2.cc`'s and `overlay.c`'s own
+  header comments for the design rationale.
 - **`sdcc/sdas/aslh5801/`** — the LH5801 assembler, built on the shared
   `sdas` framework used by SDCC's other targets.
 - **`sdcc/device/lib/lh5801/`** and **`sdcc/device/include/lh5801/`** — a
@@ -52,7 +57,12 @@ small changes too:
   `__sdcc_program_startup` stub's mnemonic selection (this code hardcoded
   mcs51-style `lcall`/`ljmp`/`sjmp` with no fallback for an unrecognized
   target): for this port HOME holds only the entry label, and GSFINAL saves
-  S for `exit()`, calls `_main` and returns to BASIC.
+  S for `exit()`, calls `_main` and returns to BASIC. Also,
+  `printIvalFuncPtr()`/`printIvalPtr()` now set `addrtaken` on a function
+  named in an initializer (`fp t[] = { f }`): SDCC only recorded an explicit
+  `&f`, and this port's local overlay must know every function that can be
+  called through a pointer. For other targets this only makes `addrtaken`
+  more accurate.
 - **`src/SDCCpeeph.c`** — `labelIsUncondJump()` picks each target's jump
   mnemonics; added the LH5801's (`jmp`/`bch`), and a FALSE return for a
   target with none listed instead of `strlen(NULL)`.

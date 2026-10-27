@@ -443,5 +443,8 @@ lh5801_assignRegisters (ebbIndex *ebbi)
      somewhere, even though the code there is genuinely dead. */
   genLH5801OrphanedLabels (ebbi->bbOrder, ebbi->count);
 
+  /* this function's locals, and the calls it makes, for overlay.c */
+  lh5801_overlayFunction (ebbi);
+
   slocNum = 0;
 }

@@ -61,4 +61,10 @@ extern unsigned int lh5801_reg_mask;
 void lh5801_assignRegisters (ebbIndex *);
 iCode *lh5801_ralloc2_cc (ebbIndex *ebbi);
 
+/* overlay.c: function locals laid out as a compiled stack per module.
+   --lh5801-no-overlay turns it off. */
+extern bool lh5801_noLocalOverlay;
+void lh5801_overlayFunction (ebbIndex *ebbi);
+void lh5801_overlayEmit (FILE *of);
+
 #endif

@@ -86,7 +86,9 @@ unsigned int lh5801_reg_mask = (1u << LH5801_REG_XL) | (1u << LH5801_REG_XH) |
                                survives an iCode in memory, as before the
                                tree-decomposition allocator (ralloc2.cc)
      --lh5801-regs=yl,yh,...   which registers the allocator may use (a,
-                               xl, xh, yl, yh, ul, uh) */
+                               xl, xh, yl, yh, ul, uh)
+     --lh5801-no-overlay       every function's locals at addresses of
+                               their own (overlay.c) */
 static bool
 lh5801_parseOptions (int *pargc, char **argv, int *i)
 {
@@ -96,6 +98,11 @@ lh5801_parseOptions (int *pargc, char **argv, int *i)
   if (!strcmp (argv[*i], "--oldralloc"))
     {
       lh5801_oldralloc = true;
+      return true;
+    }
+  if (!strcmp (argv[*i], "--lh5801-no-overlay"))
+    {
+      lh5801_noLocalOverlay = true;
       return true;
     }
   if (!strncmp (argv[*i], regsOpt, sizeof (regsOpt) - 1))
@@ -510,7 +517,7 @@ PORT lh5801_port =
   NULL,                         /* rtrackUpdate */
   lh5801_keywords,
   genLH5801AssemblerStart,
-  NULL,                         /* genAssemblerEnd */
+  lh5801_overlayEmit,           /* genAssemblerEnd: overlaid locals (overlay.c) */
   lh5801_genIVT,
   0,                            /* genXINIT -- inlined into genInitStartup instead */
   lh5801_genInitStartup,

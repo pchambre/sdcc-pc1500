@@ -1472,6 +1472,10 @@ printIvalFuncPtr (sym_link * type, initList * ilist, struct dbuf_s *oBuf)
   else
     name = val->sym->rname;
 
+  /* the function's address is taken (lh5801's overlay.c relies on it) */
+  if (val->sym && IS_FUNC (val->sym->type))
+    val->sym->addrtaken = 1;
+
   size = getSize (type);
 
   if (size == FUNCPTRSIZE)
@@ -1691,6 +1695,10 @@ printIvalPtr (symbol *sym, sym_link *type, initList *ilist, struct dbuf_s *oBuf)
 
   if (!(val = initPointer (ilist, type, 1)))
     return;
+
+  /* a function cast to a data pointer: its address is taken too */
+  if (val->sym && IS_FUNC (val->sym->type))
+    val->sym->addrtaken = 1;
 
   /* if character pointer */
   if (IS_CHAR (type->next) || IS_INT (type->next) && IS_UNSIGNED (type->next))
