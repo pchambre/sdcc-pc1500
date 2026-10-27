@@ -13,8 +13,8 @@
 
    Build (see support/scripts/build-lh5801.sh) and load it at the bottom
    of user RAM, after reserving it with the NEW the build script prints.
-   It needs about 20.5K (19K of code), so a PC-1500 with 28K of
-   contiguous RAM from 0000H -- too big for 2K + 8K:
+   It needs about 17.5K (16.5K of code), so a PC-1500 with 28K of
+   contiguous RAM from 0000H -- still too big for 2K + 8K:
      build-lh5801.sh blackjack.c 00C5
      NEW &xxxx, then load the .bin at 00C5H, then CALL &00C5
 

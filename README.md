@@ -14,10 +14,13 @@ different here.
 
 ## What's added
 
-- **`sdcc/src/lh5801/`** — the LH5801 compiler backend itself. Deliberately
-  minimal ("phase-1"): no register allocation, every operand lives at a
-  fixed, directly-addressed memory location. See `gen.c`'s own header
-  comment for the design rationale.
+- **`sdcc/src/lh5801/`** — the LH5801 compiler backend itself. Values of
+  one or two bytes live in the halves of the X/Y/U registers where SDCC's
+  tree-decomposition register allocator (`ralloc2.cc`) finds that smaller,
+  everything else at a fixed, directly-addressed memory location; A is
+  only scratch. `--oldralloc` puts every value in memory, the original
+  ("phase-1") design. See `gen.c`'s and `ralloc2.cc`'s own header
+  comments for the design rationale.
 - **`sdcc/sdas/aslh5801/`** — the LH5801 assembler, built on the shared
   `sdas` framework used by SDCC's other targets.
 - **`sdcc/device/lib/lh5801/`** and **`sdcc/device/include/lh5801/`** — a

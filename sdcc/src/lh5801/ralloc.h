@@ -15,11 +15,11 @@
 #include "common.h"
 
 /* The 8-bit registers a value byte can live in: A, and the halves of the
-   X/Y/U pointer registers. With the old allocator (the default for now,
-   see main.c's --newralloc) nothing lives in them: every value that must
+   X/Y/U pointer registers. The allocator (ralloc2.cc, SDCC's tree-
+   decomposition allocator) puts bytes in the registers lh5801_reg_mask
+   allows. With --oldralloc nothing lives in them: every value that must
    survive between iCodes is in directly-addressed memory, and A and X are
-   gen.c's scratch. The new one (ralloc2.cc, SDCC's tree-decomposition
-   allocator) puts bytes in the registers lh5801_reg_mask allows. Unlike
+   gen.c's scratch. Unlike
    e.g. STM8's X/Y, the LH5801's X/Y/U have no general 16-bit arithmetic
    (only +-1 INC/DEC), so as byte homes they're used through A: LDA/STA/
    ADC/SBC/CPA take a half as a 1-byte operand. */
@@ -53,8 +53,8 @@ typedef struct reg_info
 
 extern reg_info lh5801_regs[];
 
-/* --newralloc: use the tree-decomposition allocator (ralloc2.cc). */
-extern bool lh5801_newralloc;
+/* --oldralloc: no register allocation (every value in memory). */
+extern bool lh5801_oldralloc;
 /* Which registers it may use, one bit per LH5801_REG_* -- see main.c. */
 extern unsigned int lh5801_reg_mask;
 

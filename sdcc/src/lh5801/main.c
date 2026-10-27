@@ -66,7 +66,7 @@ lh5801_setDefaultOptions (void)
   options.out_fmt = 'i';     /* ihx */
 }
 
-bool lh5801_newralloc = false;
+bool lh5801_oldralloc = false;
 /* The halves of X, Y and U -- see ralloc2.cc's inst_sane() for where
    gen.c can keep a value in each. Not A yet: it's gen.c's scratch in
    every iCode. */
@@ -76,18 +76,20 @@ unsigned int lh5801_reg_mask = (1u << LH5801_REG_XL) | (1u << LH5801_REG_XH) |
 
 /* port->parseOption is called unconditionally from SDCCmain.c's
    parseCmdLine with no NULL guard, unlike several other PORT hooks.
-     --newralloc               the tree-decomposition allocator (ralloc2.cc)
-     --lh5801-regs=yl,yh,...   which registers it may use (a, xl, xh, yl,
-                               yh, ul, uh) */
+     --oldralloc               no register allocation: every value that
+                               survives an iCode in memory, as before the
+                               tree-decomposition allocator (ralloc2.cc)
+     --lh5801-regs=yl,yh,...   which registers the allocator may use (a,
+                               xl, xh, yl, yh, ul, uh) */
 static bool
 lh5801_parseOptions (int *pargc, char **argv, int *i)
 {
   static const char regsOpt[] = "--lh5801-regs=";
 
   (void) pargc;
-  if (!strcmp (argv[*i], "--newralloc"))
+  if (!strcmp (argv[*i], "--oldralloc"))
     {
-      lh5801_newralloc = true;
+      lh5801_oldralloc = true;
       return true;
     }
   if (!strncmp (argv[*i], regsOpt, sizeof (regsOpt) - 1))
@@ -555,7 +557,7 @@ PORT lh5801_port =
   1,                            /* globals & local statics allowed */
   LH5801_NUM_REGS,              /* num_regs: A, XL..UH -- the registers the
                                     tree-decomposition allocator
-                                    (ralloc2.cc, --newralloc) assigns, the
+                                    (ralloc2.cc) assigns, the
                                     first entries of lh5801_regs[] */
   PORT_MAGIC
 };

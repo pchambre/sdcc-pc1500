@@ -353,12 +353,12 @@ lh5801_assignRegisters (ebbIndex *ebbi)
   packRegisters (ebbi);
   markRemat (ebbi);
 
-  /* --newralloc: SDCC's tree-decomposition allocator (ralloc2.cc) puts
+  /* SDCC's tree-decomposition allocator (ralloc2.cc; not with --oldralloc) puts
      what it can in registers; every other iTemp still gets a static spill
      location below. For now it's only offered iTemps of one or two bytes
      -- see ralloc2.cc's inst_sane() for what gen.c can keep in a
      register. */
-  if (lh5801_newralloc)
+  if (!lh5801_oldralloc)
     {
       for (sym = hTabFirstItem (liveRanges, &k); sym; sym = hTabNextItem (liveRanges, &k))
         {
