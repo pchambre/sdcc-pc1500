@@ -21,6 +21,80 @@
 #include "gen.h"
 #include "SDCCgen.h"
 
+/*-----------------------------------------------------------------*/
+/* Output, and the register allocator's dry run                     */
+/*                                                                   */
+/* Every line gen.c produces goes through emit()/emitLbl(). When the  */
+/* tree-decomposition allocator (ralloc2.cc) prices a candidate       */
+/* register assignment it runs the code generator for one iCode with  */
+/* regalloc_dry_run set (drylh5801iCode()): then nothing is output and */
+/* each line only adds its size in bytes to dryCost -- so the          */
+/* allocator optimizes exactly what this file would emit.              */
+/*-----------------------------------------------------------------*/
+
+extern bool regalloc_dry_run;   /* SDCCmain.c; SDCCicode.c reads it too */
+static float dryCost;
+
+/* The size in bytes of one emitted line, "mnemonic<TAB>operands" --
+   by operand form, as sdas/aslh5801/m5801mch.c encodes them. */
+static int
+instSize (const char *line)
+{
+  char mn[16];
+  const char *ops;
+  size_t n = strcspn (line, "\t ");
+
+  if (n >= sizeof (mn))
+    n = sizeof (mn) - 1;
+  memcpy (mn, line, n);
+  mn[n] = 0;
+  ops = line + n;
+  while (*ops == '\t' || *ops == ' ')
+    ops++;
+
+  if (!strcmp (mn, "jmp") || !strcmp (mn, "sjp"))
+    return 3;
+  if (mn[0] == 'b' && strcmp (mn, "bii") || !strcmp (mn, "lop") || !strcmp (mn, "vmj"))
+    return 2;                         /* relative branches, LOP, VMJ */
+  if (!strcmp (mn, "psh") || !strcmp (mn, "pop") || !strcmp (mn, "ldx") || !strcmp (mn, "stx") ||
+      !strcmp (mn, "sie") || !strcmp (mn, "rie") || !strcmp (mn, "hlt") || !strcmp (mn, "am0") ||
+      !strcmp (mn, "am1") || !strcmp (mn, "sdp") || !strcmp (mn, "rdp"))
+    return 2;                         /* FD-prefixed */
+  if (ops[0] == '#' && ops[1] == '(')
+    return strstr (ops, "),") ? 5 : 4;  /* ME1 (I/O space), FD-prefixed */
+  if (ops[0] == '(' && ops[2] != ')')
+    return strstr (ops, "),") ? 4 : 3;  /* (ab) or (ab),i -- not (x)/(y)/(u) */
+  if (!strcmp (mn, "ldi") || strchr (ops, '#'))
+    return 2;                         /* an immediate byte */
+  return 1;                           /* inherent, register, (x)/(y)/(u) */
+}
+
+static void
+emit (const char *inst, const char *fmt, ...)
+{
+  va_list ap;
+
+  va_start (ap, fmt);
+  if (regalloc_dry_run)
+    {
+      const char *line = format_opcode (inst, fmt, ap);
+
+      if (inst && *inst)
+        dryCost += instSize (line);
+      dbuf_free (line);
+    }
+  else
+    va_emitcode (inst, fmt, ap);
+  va_end (ap);
+}
+
+static void
+emitLbl (const symbol *tlbl)
+{
+  if (!regalloc_dry_run)
+    emitLabel (tlbl);
+}
+
 /* The constant address a rematerializable iTemp (ralloc.c's markRemat())
    stands for: its symbol's rname, plus the sum of every constant offset
    along the chain of iCodes that computed it. */
@@ -88,8 +162,32 @@ aopOp (operand *op)
   {
     symbol *sym = OP_SYMBOL (op);
 
+    /* In registers (the new allocator's choice -- ralloc2.cc). */
+    if (sym->isitmp && !sym->isspilt && sym->nRegs && sym->regs[0])
+      {
+        int i;
+
+        aop->type = AOP_REG;
+        for (i = 0; i < aop->size && i < 8; i++)
+          {
+            wassertl (sym->regs[i], "lh5801: operand only partly in registers");
+            aop->u.regs[i] = sym->regs[i]->rIdx;
+          }
+        return;
+      }
+
     if (sym->isspilt && sym->usl.spillLoc)
       sym = sym->usl.spillLoc;
+
+    /* A dry run (the allocator pricing an assignment) meets temps that
+       will be in memory but don't have their spill location yet: any
+       direct address costs the same. */
+    if (regalloc_dry_run && sym->isitmp && !sym->rname[0])
+      {
+        aop->type = AOP_DIR;
+        aop->u.dir = (char *) "__lh5801_dry";
+        return;
+      }
 
     wassertl (sym->rname[0],
       "lh5801: symbol has no assigned memory address -- the phase-1 backend "
@@ -135,10 +233,10 @@ aopToDir (operand *op, int slot)
 
   if (aop->type != AOP_IMMD)
     return;
-  emitcode ("ldi", "a, >%s", aop->u.dir);
-  emitcode ("sta", "(__lh5801_remat%d)", slot);
-  emitcode ("ldi", "a, <%s", aop->u.dir);
-  emitcode ("sta", "(__lh5801_remat%d + 1)", slot);
+  emit ("ldi", "a, >%s", aop->u.dir);
+  emit ("sta", "(__lh5801_remat%d)", slot);
+  emit ("ldi", "a, <%s", aop->u.dir);
+  emit ("sta", "(__lh5801_remat%d + 1)", slot);
   Safe_free (aop->u.dir);
   aop->type = AOP_DIR;
   aop->u.dir = (char *) (slot ? "__lh5801_remat1" : "__lh5801_remat0");
@@ -196,23 +294,23 @@ loadA (const asmop *aop, int offset, int size)
   int r = aopReg (aop, offset);
 
   if (aop->type == AOP_LIT)
-    emitcode ("ldi", "a, 0x%02x", litByte (aop, offset, size));
+    emit ("ldi", "a, 0x%02x", litByte (aop, offset, size));
   else if (aop->type == AOP_FUNC || aop->type == AOP_IMMD)
     {
       wassertl (size == 2, "lh5801: a function reference or constant address must be a 2-byte pointer");
-      emitcode ("ldi", "a, %s%s", offset == 0 ? ">" : "<", aop->u.dir);
+      emit ("ldi", "a, %s%s", offset == 0 ? ">" : "<", aop->u.dir);
     }
   else if (r >= 0)
     {
       if (r != LH5801_REG_A)
-        emitcode ("lda", "%s", regName[r]);
+        emit ("lda", "%s", regName[r]);
     }
   else
     {
       char buf[128];
 
       dirAddr (buf, sizeof (buf), aop, offset);
-      emitcode ("lda", "(%s)", buf);
+      emit ("lda", "(%s)", buf);
     }
 }
 
@@ -225,14 +323,14 @@ storeA (const asmop *aop, int offset)
   if (r >= 0)
     {
       if (r != LH5801_REG_A)
-        emitcode ("sta", "%s", regName[r]);
+        emit ("sta", "%s", regName[r]);
     }
   else
     {
       char buf[128];
 
       dirAddr (buf, sizeof (buf), aop, offset);
-      emitcode ("sta", "(%s)", buf);
+      emit ("sta", "(%s)", buf);
     }
 }
 
@@ -247,21 +345,78 @@ opA (const char *memMn, const char *immMn, const asmop *aop, int offset, int siz
   int r = aopReg (aop, offset);
 
   if (aop->type == AOP_LIT)
-    emitcode (immMn, "a, #0x%02x", litByte (aop, offset, size));
+    emit (immMn, "a, #0x%02x", litByte (aop, offset, size));
   else if (r >= 0)
     {
       wassertl (r != LH5801_REG_A, "lh5801: opA() with A as both operands");
-      wassertl (!strcmp (memMn, "adc") || !strcmp (memMn, "sbc") || !strcmp (memMn, "cpa"),
-                "lh5801: this operation has no register-operand form");
-      emitcode (memMn, "%s", regName[r]);
+      if (!strcmp (memMn, "adc") || !strcmp (memMn, "sbc") || !strcmp (memMn, "cpa"))
+        emit (memMn, "%s", regName[r]);
+      else
+        {
+          /* AND/ORA/EOR have no register-half operand -- but they're
+             commutative, so A goes to scratch memory, the register into
+             A, and the scratch is the operand. Z is set from the result
+             either way; they don't touch the carry. */
+          wassertl (!strcmp (memMn, "and") || !strcmp (memMn, "ora") || !strcmp (memMn, "eor"),
+                    "lh5801: this operation has no register-operand form");
+          emit ("sta", "(__lh5801_op_scratch)");
+          emit ("lda", "%s", regName[r]);
+          emit (memMn, "(__lh5801_op_scratch)");
+        }
     }
   else
     {
       char buf[128];
 
       dirAddr (buf, sizeof (buf), aop, offset);
-      emitcode (memMn, "(%s)", buf);
+      emit (memMn, "(%s)", buf);
     }
+}
+
+/* The pointer register, 'x', 'y' or 'u', a 2-byte operand fills exactly
+   (high byte in the H half, low byte in the L half), or 0. */
+static char
+regPair (const asmop *aop)
+{
+  if (aop->type != AOP_REG || aop->size != 2)
+    return 0;
+  if (aop->u.regs[0] == LH5801_REG_XH && aop->u.regs[1] == LH5801_REG_XL)
+    return 'x';
+  if (aop->u.regs[0] == LH5801_REG_YH && aop->u.regs[1] == LH5801_REG_YL)
+    return 'y';
+  if (aop->u.regs[0] == LH5801_REG_UH && aop->u.regs[1] == LH5801_REG_UL)
+    return 'u';
+  return 0;
+}
+
+/* Does any byte of `aop` live in the pointer register `pair` ('x'/'y'/'u')? */
+static bool
+aopUsesPair (const asmop *aop, char pair)
+{
+  int lo = pair == 'x' ? LH5801_REG_XL : pair == 'y' ? LH5801_REG_YL : LH5801_REG_UL;
+  int i;
+
+  if (aop->type != AOP_REG)
+    return false;
+  for (i = 0; i < aop->size; i++)
+    if (aop->u.regs[i] == lo || aop->u.regs[i] == lo + 1)
+      return true;
+  return false;
+}
+
+/* Is the value in register operand `aop` still live after `ic`
+   (ralloc2.cc's set_surviving_regs())? */
+static bool
+aopSurvives (const iCode *ic, const asmop *aop)
+{
+  int i;
+
+  if (aop->type != AOP_REG || !ic->rSurv)
+    return false;
+  for (i = 0; i < aop->size; i++)
+    if (bitVectBitValue (ic->rSurv, aop->u.regs[i]))
+      return true;
+  return false;
 }
 
 /* X = the 2-byte pointer `aop` + a constant `offset`: a literal address
@@ -274,23 +429,23 @@ loadPtrX (const asmop *aop, unsigned long offset)
     {
       unsigned long addr = ulFromVal (aop->u.lit) + offset;
 
-      emitcode ("ldi", "xh, #0x%02x", (unsigned) ((addr >> 8) & 0xFF));
-      emitcode ("ldi", "xl, #0x%02x", (unsigned) (addr & 0xFF));
+      emit ("ldi", "xh, #0x%02x", (unsigned) ((addr >> 8) & 0xFF));
+      emit ("ldi", "xl, #0x%02x", (unsigned) (addr & 0xFF));
       return;
     }
 
   loadA (aop, 1, aop->size);  /* low byte */
   if (offset)
     {
-      emitcode ("rec", "");
-      emitcode ("adi", "a, #0x%02lx", offset);
+      emit ("rec", "");
+      emit ("adi", "a, #0x%02lx", offset);
     }
-  emitcode ("sta", "xl");
+  emit ("sta", "xl");
 
   loadA (aop, 0, aop->size);  /* high byte */
   if (offset)
-    emitcode ("adi", "a, #0x00");  /* propagate the low byte's carry-out */
-  emitcode ("sta", "xh");
+    emit ("adi", "a, #0x00");  /* propagate the low byte's carry-out */
+  emit ("sta", "xh");
 }
 
 /*-----------------------------------------------------------------*/
@@ -334,13 +489,16 @@ genLH5801AssemblerStart (FILE *of)
      device/lib/lh5801/_lh5801_ret.asm. */
   fprintf (of, "__lh5801_shift_scratch:\n");
   fprintf (of, "\t.ds 1\n");
-  /* genCmp()'s signed-comparison bookkeeping -- same per-module
-     intra-function-only scratch category as the bytes above. */
-  fprintf (of, "__lh5801_cmp_result_msb:\n");
+  /* opA()'s AND/ORA/EOR-with-a-register scratch, and genCmp()'s signed-
+     comparison byte -- same per-module intra-iCode-only scratch category
+     as the bytes above. (The third byte is spare: it was the sign
+     bookkeeping genCmp() no longer needs. Kept, so every module's DATA
+     layout stays what it was.) */
+  fprintf (of, "__lh5801_op_scratch:\n");
   fprintf (of, "\t.ds 1\n");
   fprintf (of, "__lh5801_cmp_signA:\n");
   fprintf (of, "\t.ds 1\n");
-  fprintf (of, "__lh5801_cmp_signed_lt:\n");
+  fprintf (of, "__lh5801_spare:\n");
   fprintf (of, "\t.ds 1\n");
   /* aopToDir()'s two scratch pointers -- same intra-iCode-only category. */
   fprintf (of, "__lh5801_remat0:\n");
@@ -392,14 +550,14 @@ loadStackAddrToX (long stackOffset)
   wassertl (stackOffset >= 0 && stackOffset <= 0xFF,
     "lh5801: phase-1 backend only supports an 8-bit stack-frame offset");
 
-  emitcode ("lda", "(__lh5801_frame_ptr + 1)");  /* low byte */
-  emitcode ("rec", "");
-  emitcode ("adi", "a, #0x%02lx", (unsigned long) stackOffset);
-  emitcode ("sta", "xl");
+  emit ("lda", "(__lh5801_frame_ptr + 1)");  /* low byte */
+  emit ("rec", "");
+  emit ("adi", "a, #0x%02lx", (unsigned long) stackOffset);
+  emit ("sta", "xl");
 
-  emitcode ("lda", "(__lh5801_frame_ptr)");       /* high byte */
-  emitcode ("adi", "a, #0x00");                    /* propagate carry-out */
-  emitcode ("sta", "xh");
+  emit ("lda", "(__lh5801_frame_ptr)");       /* high byte */
+  emit ("adi", "a, #0x00");                    /* propagate carry-out */
+  emit ("sta", "xh");
 }
 
 /*-----------------------------------------------------------------*/
@@ -425,11 +583,11 @@ genFunction (const iCode *ic)
   value *arg;
   bool anyOnStack = false;
 
-  emitcode (";", "-----------------------------------------");
-  emitcode (";", " function %s", sym->name);
-  emitcode (";", "-----------------------------------------");
+  emit (";", "-----------------------------------------");
+  emit (";", " function %s", sym->name);
+  emit (";", "-----------------------------------------");
 
-  emitcode ("", "%s:", sym->rname);
+  emit ("", "%s:", sym->rname);
   genLine.lineCurr->isLabel = 1;
 
   for (arg = FUNC_ARGS (sym->type); arg; arg = arg->next)
@@ -442,11 +600,11 @@ genFunction (const iCode *ic)
   if (!anyOnStack)
     return;
 
-  emitcode ("ldx", "s");
-  emitcode ("lda", "xh");
-  emitcode ("sta", "(__lh5801_frame_ptr)");
-  emitcode ("lda", "xl");
-  emitcode ("sta", "(__lh5801_frame_ptr + 1)");
+  emit ("ldx", "s");
+  emit ("lda", "xh");
+  emit ("sta", "(__lh5801_frame_ptr)");
+  emit ("lda", "xl");
+  emit ("sta", "(__lh5801_frame_ptr + 1)");
 
   for (arg = FUNC_ARGS (sym->type); arg; arg = arg->next)
     {
@@ -466,8 +624,8 @@ genFunction (const iCode *ic)
       for (j = 0; j < size; j++)
         {
           loadStackAddrToX (psym->stack + 1 + j);
-          emitcode ("lin", "x");
-          emitcode ("sta", "(%s + %d)", shadow->rname, j);
+          emit ("lin", "x");
+          emit ("sta", "(%s + %d)", shadow->rname, j);
         }
     }
 }
@@ -479,7 +637,7 @@ static void
 genEndFunction (const iCode *ic)
 {
   (void) ic;
-  emitcode ("rtn", "");
+  emit ("rtn", "");
 }
 
 /*-----------------------------------------------------------------*/
@@ -516,15 +674,15 @@ genReturn (const iCode *ic)
              locations declared once in genLH5801AssemblerStart(). */
           if (left->aop->type == AOP_LIT)
             {
-              emitcode ("ldi", "xh, 0x%02x", litByte (left->aop, 0, left->aop->size));
-              emitcode ("ldi", "xl, 0x%02x", litByte (left->aop, 1, left->aop->size));
+              emit ("ldi", "xh, 0x%02x", litByte (left->aop, 0, left->aop->size));
+              emit ("ldi", "xl, 0x%02x", litByte (left->aop, 1, left->aop->size));
             }
           else
             {
               loadA (left->aop, 0, left->aop->size);
-              emitcode ("sta", "xh");
+              emit ("sta", "xh");
               loadA (left->aop, 1, left->aop->size);
-              emitcode ("sta", "xl");
+              emit ("sta", "xl");
             }
 
           if (left->aop->size > 2)
@@ -534,7 +692,7 @@ genReturn (const iCode *ic)
               for (i = 2; i < left->aop->size; i++)
                 {
                   loadA (left->aop, i, left->aop->size);
-                  emitcode ("sta", "(__lh5801_ret%d)", i);
+                  emit ("sta", "(__lh5801_ret%d)", i);
                 }
             }
         }
@@ -552,7 +710,7 @@ genReturn (const iCode *ic)
      unconditional, so there's no inverted-condition trick needed, just
      a plain absolute jump. */
   if (!(ic->next && ic->next->op == LABEL && IC_LABEL (ic->next) == returnLabel))
-    emitcode ("jmp", "!tlabel", labelKey2num (returnLabel->key));
+    emit ("jmp", "!tlabel", labelKey2num (returnLabel->key));
 }
 
 /*-----------------------------------------------------------------*/
@@ -564,7 +722,7 @@ genLabel (const iCode *ic)
   if (IC_LABEL (ic) == entryLabel)
     return;
 
-  emitLabel (IC_LABEL (ic));
+  emitLbl (IC_LABEL (ic));
 }
 
 /*-----------------------------------------------------------------*/
@@ -579,7 +737,7 @@ genGoto (const iCode *ic)
      case, ...), and bch's limited range is exactly what produced
      aslh5801's "Branching Range Exceeded" errors compiling
      device/lib/printf_large.c. jmp has no such limit. */
-  emitcode ("jmp", "!tlabel", labelKey2num (IC_LABEL (ic)->key));
+  emit ("jmp", "!tlabel", labelKey2num (IC_LABEL (ic)->key));
 }
 
 /*-----------------------------------------------------------------*/
@@ -613,7 +771,7 @@ genIpush (const iCode *ic)
   for (i = size - 1; i >= 0; i--)
     {
       loadA (left->aop, i, size);
-      emitcode ("psh", "a");
+      emit ("psh", "a");
     }
 
   freeAsmop (left);
@@ -705,10 +863,10 @@ genAddrOf (const iCode *ic)
       aopOp (result);
       wassertl (result->aop->size == 2, "lh5801: ADDRESS_OF result must be a 2-byte pointer");
 
-      emitcode ("lda", "xh");
+      emit ("lda", "xh");
       storeA (result->aop, 0);
 
-      emitcode ("lda", "xl");
+      emit ("lda", "xl");
       storeA (result->aop, 1);
 
       freeAsmop (result);
@@ -723,10 +881,10 @@ genAddrOf (const iCode *ic)
   aopOp (result);
   wassertl (result->aop->size == 2, "lh5801: ADDRESS_OF result must be a 2-byte pointer");
 
-  emitcode ("ldi", "a, >%s", sym_expr);
+  emit ("ldi", "a, >%s", sym_expr);
   storeA (result->aop, 0);
 
-  emitcode ("ldi", "a, <%s", sym_expr);
+  emit ("ldi", "a, <%s", sym_expr);
   storeA (result->aop, 1);
 
   freeAsmop (result);
@@ -768,7 +926,7 @@ genWiden (operand *result, operand *right)
     {
       for (i = 0; i < resultSize; i++)
         {
-          emitcode ("ldi", "a, 0x%02x", litByte (right->aop, i, resultSize));
+          emit ("ldi", "a, 0x%02x", litByte (right->aop, i, resultSize));
           storeA (result->aop, i);
         }
       return;
@@ -780,13 +938,13 @@ genWiden (operand *result, operand *right)
       symbol *positive = newiTempLabel (NULL);
 
       loadA (right->aop, 0, rightSize);
-      emitcode ("ani", "a, #0x80");
-      emitcode ("bzs", "!tlabel", labelKey2num (positive->key));
-      emitcode ("ldi", "a, 0xff");
-      emitLabel (positive);
+      emit ("ani", "a, #0x80");
+      emit ("bzs", "!tlabel", labelKey2num (positive->key));
+      emit ("ldi", "a, 0xff");
+      emitLbl (positive);
     }
   else
-    emitcode ("ldi", "a, 0x00");
+    emit ("ldi", "a, 0x00");
 
   for (i = 0; i < extra; i++)
     {
@@ -840,7 +998,8 @@ genCall (const iCode *ic)
     {
       operand *left = IC_LEFT (ic);
 
-      if (!pcallTrampolineEmitted)
+      /* (Not in a dry run: that would mark it emitted without emitting it.) */
+      if (!pcallTrampolineEmitted && !regalloc_dry_run)
         {
           /* A plain fixed name, not SDCC's usual newiTempLabel()/!tlabel
              numbered-local-label mechanism -- that combination tripped
@@ -851,11 +1010,11 @@ genCall (const iCode *ic)
              once for the whole file (guarded by pcallTrampolineEmitted),
              so a fixed name can't collide with anything. */
           pcallTrampolineEmitted = true;
-          emitcode ("bch", "__lh5801_pcall_trampoline_skip");
-          emitcode ("", "__lh5801_pcall_trampoline:");
+          emit ("bch", "__lh5801_pcall_trampoline_skip");
+          emit ("", "__lh5801_pcall_trampoline:");
           genLine.lineCurr->isLabel = 1;
-          emitcode ("jmp", "0x0000");
-          emitcode ("", "__lh5801_pcall_trampoline_skip:");
+          emit ("jmp", "0x0000");
+          emit ("", "__lh5801_pcall_trampoline_skip:");
           genLine.lineCurr->isLabel = 1;
         }
 
@@ -864,20 +1023,20 @@ genCall (const iCode *ic)
       wassertl (left->aop->size == 2, "lh5801: PCALL target must be a 2-byte function pointer");
 
       loadA (left->aop, 0, left->aop->size);
-      emitcode ("sta", "(__lh5801_pcall_trampoline + 1)");
+      emit ("sta", "(__lh5801_pcall_trampoline + 1)");
 
       loadA (left->aop, 1, left->aop->size);
-      emitcode ("sta", "(__lh5801_pcall_trampoline + 2)");
+      emit ("sta", "(__lh5801_pcall_trampoline + 2)");
 
       freeAsmop (left);
 
-      emitcode ("sjp", "__lh5801_pcall_trampoline");
+      emit ("sjp", "__lh5801_pcall_trampoline");
     }
   else
     {
       symbol *sym = OP_SYMBOL (IC_LEFT (ic));
 
-      emitcode ("sjp", "%s", sym->rname[0] ? sym->rname : sym->name);
+      emit ("sjp", "%s", sym->rname[0] ? sym->rname : sym->name);
     }
 
   if (IC_RESULT (ic))
@@ -922,11 +1081,11 @@ genCall (const iCode *ic)
       for (i = 0; i < calleeSize; i++)
         {
           if (i == 0 && calleeSize > 1)
-            emitcode ("lda", "xh");
+            emit ("lda", "xh");
           else if (i == 1)
-            emitcode ("lda", "xl");
+            emit ("lda", "xl");
           else if (i >= 2)
-            emitcode ("lda", "(__lh5801_ret%d)", i);
+            emit ("lda", "(__lh5801_ret%d)", i);
           /* i == 0 && calleeSize == 1: already sitting in A, no load needed. */
 
           if (i >= skip)
@@ -944,11 +1103,11 @@ genCall (const iCode *ic)
      used its result got the last argument byte instead. */
   while (parmBytes >= 2)
     {
-      emitcode ("pop", "x");
+      emit ("pop", "x");
       parmBytes -= 2;
     }
   if (parmBytes)
-    emitcode ("pop", "a");
+    emit ("pop", "a");
 }
 
 /*-----------------------------------------------------------------*/
@@ -1026,6 +1185,7 @@ genPointerSet (const iCode *ic)
   operand *result = IC_RESULT (ic);
   operand *right = IC_RIGHT (ic);
   int size, i;
+  char pair;
 
   aopOp (right);
   aopOp (result);
@@ -1040,8 +1200,25 @@ genPointerSet (const iCode *ic)
       for (i = 0; i < size; i++)
         {
           loadA (right->aop, i, size);
-          emitcode ("sta", "(%s + %d)", result->aop->u.dir, i);
+          emit ("sta", "(%s + %d)", result->aop->u.dir, i);
         }
+      freeAsmop (right);
+      freeAsmop (result);
+      return;
+    }
+
+  pair = regPair (result->aop);
+  if (pair && !aopUsesPair (right->aop, pair))
+    {
+      /* The pointer is already in X, Y or U: store through it there. */
+      for (i = 0; i < size; i++)
+        {
+          loadA (right->aop, i, size);
+          emit ("sin", "%c", pair);
+        }
+      if (aopSurvives (ic, result->aop))
+        for (i = 0; i < size; i++)
+          emit ("dec", "%c", pair);
       freeAsmop (right);
       freeAsmop (result);
       return;
@@ -1052,7 +1229,7 @@ genPointerSet (const iCode *ic)
   for (i = 0; i < size; i++)
     {
       loadA (right->aop, i, size);
-      emitcode ("sin", "x");
+      emit ("sin", "x");
     }
 
   freeAsmop (right);
@@ -1110,12 +1287,12 @@ genAddSub (const iCode *ic, bool isSub)
   leftExtra = (left->aop->type == AOP_LIT) ? 0 : size - left->aop->size;
   rightExtra = (right->aop->type == AOP_LIT) ? 0 : size - right->aop->size;
 
-  emitcode (isSub ? "sec" : "rec", "");
+  emit (isSub ? "sec" : "rec", "");
 
   for (i = size - 1; i >= 0; i--)
     {
       if (i < leftExtra)
-        emitcode ("ldi", "a, 0x00");
+        emit ("ldi", "a, 0x00");
       else
         loadA (left->aop, i - leftExtra, left->aop->size);
 
@@ -1125,7 +1302,7 @@ genAddSub (const iCode *ic, bool isSub)
         /* No real memory address holds this zero-extension byte -- add/
            subtract a literal 0 instead, still propagating the carry
            chain exactly like a real byte would. */
-        emitcode (isSub ? "sbi" : "adi", "a, #0x00");
+        emit (isSub ? "sbi" : "adi", "a, #0x00");
       else
         opA (isSub ? "sbc" : "adc", isSub ? "sbi" : "adi", right->aop, i - rightExtra, right->aop->size);
 
@@ -1216,20 +1393,20 @@ emitCmpBranch (int op, bool when, const symbol *target)
       emitLongCondBranch ("bzs", target);
       return;
     case '>':
-      emitcode ("bcr", "!tlabel", labelKey2num (skip->key));
-      emitcode ("bzs", "!tlabel", labelKey2num (skip->key));
-      emitcode ("jmp", "!tlabel", labelKey2num (target->key));
-      emitLabel (skip);
+      emit ("bcr", "!tlabel", labelKey2num (skip->key));
+      emit ("bzs", "!tlabel", labelKey2num (skip->key));
+      emit ("jmp", "!tlabel", labelKey2num (target->key));
+      emitLbl (skip);
       return;
     case LE_OP:
       {
         symbol *take = newiTempLabel (NULL);
 
-        emitcode ("bcr", "!tlabel", labelKey2num (take->key));
-        emitcode ("bzr", "!tlabel", labelKey2num (skip->key));
-        emitLabel (take);
-        emitcode ("jmp", "!tlabel", labelKey2num (target->key));
-        emitLabel (skip);
+        emit ("bcr", "!tlabel", labelKey2num (take->key));
+        emit ("bzr", "!tlabel", labelKey2num (skip->key));
+        emitLbl (take);
+        emit ("jmp", "!tlabel", labelKey2num (target->key));
+        emitLbl (skip);
       }
       return;
     }
@@ -1314,17 +1491,17 @@ genCmp (const iCode *ic, iCode *ifx)
   if (isSigned && right->aop->type != AOP_LIT)
     {
       loadA (right->aop, 0, right->aop->size);
-      emitcode ("eai", "a, #0x80");
-      emitcode ("sta", "(__lh5801_cmp_signA)");
+      emit ("eai", "a, #0x80");
+      emit ("sta", "(__lh5801_cmp_signA)");
     }
 
   if (needScratch)
     {
-      emitcode ("ldi", "a, 0x00");
-      emitcode ("sta", "(__lh5801_cmp_scratch)");
+      emit ("ldi", "a, 0x00");
+      emit ("sta", "(__lh5801_cmp_scratch)");
     }
 
-  emitcode ("sec", "");
+  emit ("sec", "");
 
   for (i = size - 1; i >= 0; i--)
     {
@@ -1332,19 +1509,19 @@ genCmp (const iCode *ic, iCode *ifx)
 
       loadA (left->aop, i, size);
       if (flip)
-        emitcode ("eai", "a, #0x80");
+        emit ("eai", "a, #0x80");
 
       if (right->aop->type == AOP_LIT)
-        emitcode ("sbi", "a, #0x%02x", litByte (right->aop, i, size) ^ (flip ? 0x80 : 0));
+        emit ("sbi", "a, #0x%02x", litByte (right->aop, i, size) ^ (flip ? 0x80 : 0));
       else if (flip)
-        emitcode ("sbc", "(__lh5801_cmp_signA)");
+        emit ("sbc", "(__lh5801_cmp_signA)");
       else
         opA ("sbc", "sbi", right->aop, i, size);
 
       if (needScratch)
         {
-          emitcode ("ora", "(__lh5801_cmp_scratch)");
-          emitcode ("sta", "(__lh5801_cmp_scratch)");
+          emit ("ora", "(__lh5801_cmp_scratch)");
+          emit ("sta", "(__lh5801_cmp_scratch)");
         }
     }
 
@@ -1369,29 +1546,29 @@ genCmp (const iCode *ic, iCode *ifx)
       switch (ic->op)
         {
         case '<':                          /* left <  right : C=0 */
-          emitcode ("bcr", "!tlabel", labelKey2num (trueLabel->key));
+          emit ("bcr", "!tlabel", labelKey2num (trueLabel->key));
           break;
         case GE_OP:                        /* left >= right : C=1 */
-          emitcode ("bcs", "!tlabel", labelKey2num (trueLabel->key));
+          emit ("bcs", "!tlabel", labelKey2num (trueLabel->key));
           break;
         case EQ_OP:                        /* left == right : Z=1 */
-          emitcode ("bzs", "!tlabel", labelKey2num (trueLabel->key));
+          emit ("bzs", "!tlabel", labelKey2num (trueLabel->key));
           break;
         case NE_OP:                        /* left != right : Z=0 */
-          emitcode ("bzr", "!tlabel", labelKey2num (trueLabel->key));
+          emit ("bzr", "!tlabel", labelKey2num (trueLabel->key));
           break;
         case '>':                          /* left >  right : C=1 and Z=0 */
           {
             symbol *falseLabel = newiTempLabel (NULL);
 
-            emitcode ("bcr", "!tlabel", labelKey2num (falseLabel->key));
-            emitcode ("bzr", "!tlabel", labelKey2num (trueLabel->key));
-            emitLabel (falseLabel);
+            emit ("bcr", "!tlabel", labelKey2num (falseLabel->key));
+            emit ("bzr", "!tlabel", labelKey2num (trueLabel->key));
+            emitLbl (falseLabel);
           }
           break;
         case LE_OP:                        /* left <= right : C=0 or Z=1 */
-          emitcode ("bcr", "!tlabel", labelKey2num (trueLabel->key));
-          emitcode ("bzs", "!tlabel", labelKey2num (trueLabel->key));
+          emit ("bcr", "!tlabel", labelKey2num (trueLabel->key));
+          emit ("bzs", "!tlabel", labelKey2num (trueLabel->key));
           break;
         default:
           wassertl (0, "lh5801: unrecognized comparison operator in genCmp");
@@ -1399,11 +1576,11 @@ genCmp (const iCode *ic, iCode *ifx)
         }
     }
 
-  emitcode ("ldi", "a, 0x00");
-  emitcode ("bch", "!tlabel", labelKey2num (endLabel->key));
-  emitLabel (trueLabel);
-  emitcode ("ldi", "a, 0x01");
-  emitLabel (endLabel);
+  emit ("ldi", "a, 0x00");
+  emit ("bch", "!tlabel", labelKey2num (endLabel->key));
+  emitLbl (trueLabel);
+  emit ("ldi", "a, 0x01");
+  emitLbl (endLabel);
 
   storeA (result->aop, 0);
   freeAsmop (result);
@@ -1429,9 +1606,9 @@ emitLongCondBranch (const char *invMnemonic, const symbol *target)
 {
   symbol *skip = newiTempLabel (NULL);
 
-  emitcode (invMnemonic, "!tlabel", labelKey2num (skip->key));
-  emitcode ("jmp", "!tlabel", labelKey2num (target->key));
-  emitLabel (skip);
+  emit (invMnemonic, "!tlabel", labelKey2num (skip->key));
+  emit ("jmp", "!tlabel", labelKey2num (target->key));
+  emitLbl (skip);
 }
 
 /*-----------------------------------------------------------------*/
@@ -1467,7 +1644,7 @@ genIfx (const iCode *ic)
   if (IC_TRUE (ic) && IC_FALSE (ic))
     {
       emitLongCondBranch ("bzs", IC_TRUE (ic));
-      emitcode ("jmp", "!tlabel", labelKey2num (IC_FALSE (ic)->key));
+      emit ("jmp", "!tlabel", labelKey2num (IC_FALSE (ic)->key));
     }
   else if (IC_FALSE (ic))
     emitLongCondBranch ("bzr", IC_FALSE (ic));
@@ -1591,7 +1768,7 @@ emitShiftPass (asmop *resultAop, int size, bool isLeft, bool arithmeticRight)
       for (i = size - 1; i >= 0; i--)
         {
           loadA (resultAop, i, resultAop->size);
-          emitcode (i == size - 1 ? "shl" : "rol", "");
+          emit (i == size - 1 ? "shl" : "rol", "");
           storeA (resultAop, i);
         }
     }
@@ -1601,18 +1778,18 @@ emitShiftPass (asmop *resultAop, int size, bool isLeft, bool arithmeticRight)
       symbol *seededLabel = newiTempLabel (NULL);
 
       loadA (resultAop, 0, resultAop->size);
-      emitcode ("ani", "a, #0x80");
-      emitcode ("bzs", "!tlabel", labelKey2num (nonNegLabel->key));
-      emitcode ("sec", "");
-      emitcode ("bch", "!tlabel", labelKey2num (seededLabel->key));
-      emitLabel (nonNegLabel);
-      emitcode ("rec", "");
-      emitLabel (seededLabel);
+      emit ("ani", "a, #0x80");
+      emit ("bzs", "!tlabel", labelKey2num (nonNegLabel->key));
+      emit ("sec", "");
+      emit ("bch", "!tlabel", labelKey2num (seededLabel->key));
+      emitLbl (nonNegLabel);
+      emit ("rec", "");
+      emitLbl (seededLabel);
 
       for (i = 0; i < size; i++)
         {
           loadA (resultAop, i, resultAop->size);
-          emitcode ("ror", "");
+          emit ("ror", "");
           storeA (resultAop, i);
         }
     }
@@ -1621,7 +1798,7 @@ emitShiftPass (asmop *resultAop, int size, bool isLeft, bool arithmeticRight)
       for (i = 0; i < size; i++)
         {
           loadA (resultAop, i, resultAop->size);
-          emitcode (i == 0 ? "shr" : "ror", "");
+          emit (i == 0 ? "shr" : "ror", "");
           storeA (resultAop, i);
         }
     }
@@ -1643,15 +1820,15 @@ emitBitShifts (asmop *resultAop, int size, int bits, bool isLeft, bool arithmeti
     {
       symbol *loopStart = newiTempLabel (NULL);
 
-      emitcode ("ldi", "a, 0x%02x", bits);
-      emitcode ("sta", "(__lh5801_shift_scratch)");
-      emitLabel (loopStart);
+      emit ("ldi", "a, 0x%02x", bits);
+      emit ("sta", "(__lh5801_shift_scratch)");
+      emitLbl (loopStart);
       emitShiftPass (resultAop, size, isLeft, arithmeticRight);
       /* sec: see genShift()'s runtime-count loop */
-      emitcode ("lda", "(__lh5801_shift_scratch)");
-      emitcode ("sec", "");
-      emitcode ("sbi", "a, #0x01");
-      emitcode ("sta", "(__lh5801_shift_scratch)");
+      emit ("lda", "(__lh5801_shift_scratch)");
+      emit ("sec", "");
+      emit ("sbi", "a, #0x01");
+      emit ("sta", "(__lh5801_shift_scratch)");
       emitLongCondBranch ("bzs", loopStart);
     }
 }
@@ -1710,7 +1887,7 @@ genMult (const iCode *ic)
           loadA (result->aop, i + byteShift, result->aop->size);
           storeA (result->aop, i);
         }
-      emitcode ("ldi", "a, 0x00");
+      emit ("ldi", "a, 0x00");
       for (; i < size; i++)
         {
           storeA (result->aop, i);
@@ -1773,7 +1950,7 @@ genShift (const iCode *ic, bool isLeft)
               storeA (result->aop, i);
             }
           if (byteShift)
-            emitcode ("ldi", "a, 0x00");
+            emit ("ldi", "a, 0x00");
           for (; i < size; i++)
             {
               storeA (result->aop, i);
@@ -1793,13 +1970,13 @@ genShift (const iCode *ic, bool isLeft)
                   symbol *positive = newiTempLabel (NULL);
 
                   loadA (left->aop, 0, size);
-                  emitcode ("ani", "a, #0x80");
-                  emitcode ("bzs", "!tlabel", labelKey2num (positive->key));
-                  emitcode ("ldi", "a, 0xff");
-                  emitLabel (positive);
+                  emit ("ani", "a, #0x80");
+                  emit ("bzs", "!tlabel", labelKey2num (positive->key));
+                  emit ("ldi", "a, 0xff");
+                  emitLbl (positive);
                 }
               else
-                emitcode ("ldi", "a, 0x00");
+                emit ("ldi", "a, 0x00");
             }
           for (; i >= 0; i--)
             {
@@ -1823,11 +2000,11 @@ genShift (const iCode *ic, bool isLeft)
         }
 
       loadA (right->aop, right->aop->size - 1, right->aop->size);
-      emitcode ("sta", "(__lh5801_shift_scratch)");
+      emit ("sta", "(__lh5801_shift_scratch)");
 
-      emitLabel (loopStart);
-      emitcode ("lda", "(__lh5801_shift_scratch)");
-      emitcode ("bzs", "!tlabel", labelKey2num (loopEnd->key));
+      emitLbl (loopStart);
+      emit ("lda", "(__lh5801_shift_scratch)");
+      emit ("bzs", "!tlabel", labelKey2num (loopEnd->key));
 
       emitShiftPass (result->aop, size, isLeft, arithmeticRight);
 
@@ -1838,12 +2015,12 @@ genShift (const iCode *ic, bool isLeft)
          (shr/ror are rotate-through-carry, so they always leave one),
          turning "subtract 1" into "subtract 1 or 2" depending on that
          leftover bit and corrupting the whole loop's iteration count. */
-      emitcode ("lda", "(__lh5801_shift_scratch)");
-      emitcode ("sec", "");
-      emitcode ("sbi", "a, #0x01");
-      emitcode ("sta", "(__lh5801_shift_scratch)");
-      emitcode ("jmp", "!tlabel", labelKey2num (loopStart->key));
-      emitLabel (loopEnd);
+      emit ("lda", "(__lh5801_shift_scratch)");
+      emit ("sec", "");
+      emit ("sbi", "a, #0x01");
+      emit ("sta", "(__lh5801_shift_scratch)");
+      emit ("jmp", "!tlabel", labelKey2num (loopStart->key));
+      emitLbl (loopEnd);
     }
 
   freeAsmop (left);
@@ -1894,6 +2071,7 @@ genGetValueAtAddress (const iCode *ic)
   operand *right = IC_RIGHT (ic);
   int size, i;
   unsigned long offset = 0;
+  char pair;
 
   aopOp (left);
   aopOp (result);
@@ -1916,9 +2094,26 @@ genGetValueAtAddress (const iCode *ic)
       /* A constant address: read it directly, no X at all. */
       for (i = 0; i < size; i++)
         {
-          emitcode ("lda", "(%s + %lu)", left->aop->u.dir, offset + i);
+          emit ("lda", "(%s + %lu)", left->aop->u.dir, offset + i);
           storeA (result->aop, i);
         }
+      freeAsmop (left);
+      freeAsmop (result);
+      return;
+    }
+
+  pair = regPair (left->aop);
+  if (pair && !offset && !aopUsesPair (result->aop, pair))
+    {
+      /* The pointer is already in X, Y or U: read through it there. */
+      for (i = 0; i < size; i++)
+        {
+          emit ("lin", "%c", pair);
+          storeA (result->aop, i);
+        }
+      if (aopSurvives (ic, left->aop))
+        for (i = 0; i < size; i++)
+          emit ("dec", "%c", pair);
       freeAsmop (left);
       freeAsmop (result);
       return;
@@ -1928,7 +2123,7 @@ genGetValueAtAddress (const iCode *ic)
 
   for (i = 0; i < size; i++)
     {
-      emitcode ("lin", "x");
+      emit ("lin", "x");
       storeA (result->aop, i);
     }
 
@@ -1961,11 +2156,11 @@ genUnaryMinus (const iCode *ic)
   wassertl (right->aop->type == AOP_LIT || right->aop->size == size,
     "lh5801: phase-1 backend requires matching operand/result sizes for unary '-'");
 
-  emitcode ("sec", "");
+  emit ("sec", "");
 
   for (i = size - 1; i >= 0; i--)
     {
-      emitcode ("ldi", "a, 0x00");
+      emit ("ldi", "a, 0x00");
       opA ("sbc", "sbi", right->aop, i, size);
       storeA (result->aop, i);
     }
@@ -2013,12 +2208,12 @@ genNot (const iCode *ic)
 
   freeAsmop (right);
 
-  emitcode ("bzs", "!tlabel", labelKey2num (trueLabel->key));
-  emitcode ("ldi", "a, 0x00");
-  emitcode ("bch", "!tlabel", labelKey2num (endLabel->key));
-  emitLabel (trueLabel);
-  emitcode ("ldi", "a, 0x01");
-  emitLabel (endLabel);
+  emit ("bzs", "!tlabel", labelKey2num (trueLabel->key));
+  emit ("ldi", "a, 0x00");
+  emit ("bch", "!tlabel", labelKey2num (endLabel->key));
+  emitLbl (trueLabel);
+  emit ("ldi", "a, 0x01");
+  emitLbl (endLabel);
 
   storeA (result->aop, 0);
   freeAsmop (result);
@@ -2070,6 +2265,129 @@ dropReloads (lineNode *head)
 }
 
 /*-----------------------------------------------------------------*/
+/* genIC - generate code for one iCode                              */
+/*-----------------------------------------------------------------*/
+static void
+genIC (iCode *ic)
+{
+  /* A rematerializable result (see AOP_IMMD) is never stored anywhere:
+     every use of it rebuilds the constant address itself. */
+  if ((ic->op == ADDRESS_OF || ic->op == '+' || ic->op == '-' ||
+       ic->op == CAST || ic->op == '=') &&
+      !POINTER_SET (ic) && isRemat (IC_RESULT (ic)))
+    return;
+
+  switch (ic->op)
+    {
+    case FUNCTION:
+      genFunction (ic);
+      break;
+    case ENDFUNCTION:
+      genEndFunction (ic);
+      break;
+    case RETURN:
+      genReturn (ic);
+      break;
+    case LABEL:
+      genLabel (ic);
+      break;
+    case GOTO:
+      genGoto (ic);
+      break;
+    case '=':
+      if (POINTER_SET (ic))
+        genPointerSet (ic);
+      else
+        genAssign (ic);
+      break;
+    case IPUSH:
+      genIpush (ic);
+      break;
+    case CALL:
+    case PCALL:
+      genCall (ic);
+      break;
+    case ADDRESS_OF:
+      genAddrOf (ic);
+      break;
+    case CAST:
+      genCast (ic);
+      break;
+    case '+':
+      genAddSub (ic, false);
+      break;
+    case '-':
+      genAddSub (ic, true);
+      break;
+    case '*':
+      genMult (ic);
+      break;
+    case '>':
+    case '<':
+    case LE_OP:
+    case GE_OP:
+    case EQ_OP:
+    case NE_OP:
+      genCmp (ic, ifxForOp (IC_RESULT (ic), ic));
+      break;
+    case IFX:
+      genIfx (ic);
+      break;
+    case '&':
+    case BITWISEAND:
+    case '|':
+    case '^':
+      genBitwise (ic);
+      break;
+    case LEFT_OP:
+      genShift (ic, true);
+      break;
+    case RIGHT_OP:
+      genShift (ic, false);
+      break;
+    case GET_VALUE_AT_ADDRESS:
+      genGetValueAtAddress (ic);
+      break;
+    case UNARYMINUS:
+      genUnaryMinus (ic);
+      break;
+    case '!':
+      genNot (ic);
+      break;
+    default:
+      /* Print the actual iCode (not just its raw numeric op) to make
+         the next gap easy to identify without needing a debugger --
+         SDCCy.h has the numeric-to-name mapping if piCode's own
+         textual form isn't enough. */
+      fprintf (stderr, "lh5801: unimplemented iCode (op=%d): ", ic->op);
+      piCode (ic, stderr);
+      wassertl (0, "lh5801: iCode operator not yet implemented in the phase-1 backend");
+      break;
+    }
+}
+
+/* The register allocator's price for code generation of one iCode with
+   its operands' candidate registers (ralloc2.cc's instruction_cost()):
+   its size in bytes, without emitting anything. */
+float
+drylh5801iCode (iCode *ic)
+{
+  /* The labels a dry run makes (newiTempLabel()) are never emitted, so
+     their numbers are given back: the allocator runs the code generator
+     thousands of times, and this port never resets labelKey (main.c), so
+     the numbers would soon pass 65535 -- past what aslh5801's NNNNN$
+     local labels can hold. */
+  int savedLabelKey = labelKey;
+
+  regalloc_dry_run = true;
+  dryCost = 0;
+  genIC (ic);
+  regalloc_dry_run = false;
+  labelKey = savedLabelKey;
+  return dryCost;
+}
+
+/*-----------------------------------------------------------------*/
 /* genLH5801Code - generate code for a linear iCode chain          */
 /*-----------------------------------------------------------------*/
 void
@@ -2085,101 +2403,7 @@ genLH5801Code (iCode *lic)
       if (ic->generated)
         continue;
       ic->generated = 1;
-
-      /* A rematerializable result (see AOP_IMMD) is never stored anywhere:
-         every use of it rebuilds the constant address itself. */
-      if ((ic->op == ADDRESS_OF || ic->op == '+' || ic->op == '-' ||
-           ic->op == CAST || ic->op == '=') &&
-          !POINTER_SET (ic) && isRemat (IC_RESULT (ic)))
-        continue;
-
-      switch (ic->op)
-        {
-        case FUNCTION:
-          genFunction (ic);
-          break;
-        case ENDFUNCTION:
-          genEndFunction (ic);
-          break;
-        case RETURN:
-          genReturn (ic);
-          break;
-        case LABEL:
-          genLabel (ic);
-          break;
-        case GOTO:
-          genGoto (ic);
-          break;
-        case '=':
-          if (POINTER_SET (ic))
-            genPointerSet (ic);
-          else
-            genAssign (ic);
-          break;
-        case IPUSH:
-          genIpush (ic);
-          break;
-        case CALL:
-        case PCALL:
-          genCall (ic);
-          break;
-        case ADDRESS_OF:
-          genAddrOf (ic);
-          break;
-        case CAST:
-          genCast (ic);
-          break;
-        case '+':
-          genAddSub (ic, false);
-          break;
-        case '-':
-          genAddSub (ic, true);
-          break;
-        case '*':
-          genMult (ic);
-          break;
-        case '>':
-        case '<':
-        case LE_OP:
-        case GE_OP:
-        case EQ_OP:
-        case NE_OP:
-          genCmp (ic, ifxForOp (IC_RESULT (ic), ic));
-          break;
-        case IFX:
-          genIfx (ic);
-          break;
-        case '&':
-        case BITWISEAND:
-        case '|':
-        case '^':
-          genBitwise (ic);
-          break;
-        case LEFT_OP:
-          genShift (ic, true);
-          break;
-        case RIGHT_OP:
-          genShift (ic, false);
-          break;
-        case GET_VALUE_AT_ADDRESS:
-          genGetValueAtAddress (ic);
-          break;
-        case UNARYMINUS:
-          genUnaryMinus (ic);
-          break;
-        case '!':
-          genNot (ic);
-          break;
-        default:
-          /* Print the actual iCode (not just its raw numeric op) to make
-             the next gap easy to identify without needing a debugger --
-             SDCCy.h has the numeric-to-name mapping if piCode's own
-             textual form isn't enough. */
-          fprintf (stderr, "lh5801: unimplemented iCode (op=%d): ", ic->op);
-          piCode (ic, stderr);
-          wassertl (0, "lh5801: iCode operator not yet implemented in the phase-1 backend");
-          break;
-        }
+      genIC (ic);
     }
 
   /* Flush the accumulated line list into the output buffer -- every other
@@ -2239,7 +2463,7 @@ genLH5801OrphanedLabels (eBBlock **ebbs, int count)
 
       anyEmitted = true;
       initGenLineElement ();
-      emitLabel (lbl);
+      emitLbl (lbl);
     }
 
   if (anyEmitted)

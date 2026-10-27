@@ -27,8 +27,14 @@
 
 reg_info lh5801_regs[] =
 {
-  {0, A_IDX,  "a"},
-  {0, SP_IDX, "s"},
+  {REG_GPR, LH5801_REG_A,  "a"},
+  {REG_GPR, LH5801_REG_XL, "xl"},
+  {REG_GPR, LH5801_REG_XH, "xh"},
+  {REG_GPR, LH5801_REG_YL, "yl"},
+  {REG_GPR, LH5801_REG_YH, "yh"},
+  {REG_GPR, LH5801_REG_UL, "ul"},
+  {REG_GPR, LH5801_REG_UH, "uh"},
+  {0,       SP_IDX,        "s"},
 };
 
 static int slocNum = 0;
@@ -347,12 +353,37 @@ lh5801_assignRegisters (ebbIndex *ebbi)
   packRegisters (ebbi);
   markRemat (ebbi);
 
+  /* --newralloc: SDCC's tree-decomposition allocator (ralloc2.cc) puts
+     what it can in registers; every other iTemp still gets a static spill
+     location below. For now it's only offered iTemps of one or two bytes
+     -- see ralloc2.cc's inst_sane() for what gen.c can keep in a
+     register. */
+  if (lh5801_newralloc)
+    {
+      for (sym = hTabFirstItem (liveRanges, &k); sym; sym = hTabNextItem (liveRanges, &k))
+        {
+          int size;
+
+          if (!sym->isitmp || sym->isspilt || sym->remat || sym->liveTo == sym->liveFrom)
+            continue;
+          size = getSize (sym->type);
+          if (size < 1 || size > 2)
+            continue;
+          sym->nRegs = size;
+          sym->regType = REG_GPR;
+          sym->for_newralloc = 1;
+        }
+      lh5801_ralloc2_cc (ebbi);
+    }
+
   for (sym = hTabFirstItem (liveRanges, &k); sym; sym = hTabNextItem (liveRanges, &k))
     {
       if (!sym->isitmp)
         continue;
       if (sym->isspilt || sym->remat)
         continue;
+      if (sym->nRegs && sym->regs[0])
+        continue;                       /* in registers */
       if (sym->liveFrom == sym->liveTo && !bitVectnBitsOn (sym->defs))
         continue;
 

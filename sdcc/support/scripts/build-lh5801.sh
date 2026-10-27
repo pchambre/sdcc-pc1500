@@ -59,7 +59,14 @@ DEVICE_INCLUDE="$SDCC_ROOT/device/include"
 DEVICE_INCLUDE_LH5801="$SDCC_ROOT/device/include/lh5801"
 DEVICE_LIB_LH5801="$SDCC_ROOT/device/lib/lh5801"
 DEVICE_LIB="$SDCC_ROOT/device/lib"
+# SDCCFLAGS (environment): extra sdcc options for every compile, the
+# runtime library's included -- e.g. SDCCFLAGS=--newralloc. Each set of
+# flags gets its own library cache.
+SDCCFLAGS="${SDCCFLAGS:-}"
 LIB_CACHE="$SDCC_ROOT/device/lib/build/lh5801"
+if [ -n "$SDCCFLAGS" ]; then
+  LIB_CACHE="$LIB_CACHE-$(echo "$SDCCFLAGS" | md5sum | cut -c1-8)"
+fi
 LIB_NAME="pc1500"
 # Generic (non-port-specific) C runtime sources from device/lib -- sdcc
 # doesn't pull these in on its own. All confirmed to compile and assemble
@@ -127,7 +134,8 @@ trap 'rm -rf "$WORKDIR"' EXIT
 compile_c() {  # compile_c <src.c> <out_dir> -> <out_dir>/<name>.rel
   local src="$1" out="$2" name
   name="$(basename "$src" .c)"
-  "$SDCC" -S -mlh5801 -I"$DEVICE_INCLUDE" -I"$DEVICE_INCLUDE_LH5801" "$src" -o "$out/$name.asm"
+  # shellcheck disable=SC2086 -- SDCCFLAGS is a word list
+  "$SDCC" -S -mlh5801 $SDCCFLAGS -I"$DEVICE_INCLUDE" -I"$DEVICE_INCLUDE_LH5801" "$src" -o "$out/$name.asm"
   "$ASLH5801" -logs "$out/$name.asm" >/dev/null
 }
 
