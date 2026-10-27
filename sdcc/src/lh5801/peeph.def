@@ -1,0 +1,121 @@
+// peeph.def - peephole rules for the LH5801 port.
+//
+// Paul Chambre, 2026
+//
+// gen.c's emitLongCondBranch() makes every conditional branch to an
+// iCode label an inverted short branch over an absolute JMP, since the
+// target can be anywhere in the function. Most targets are close: then
+// the condition goes back the right way round and branches there itself
+// (2 bytes instead of 5). labelInRange() measures with the port's
+// instruction sizes (main.c's lh5801_getInstructionSize()) and allows
+// 127 bytes; the LH5801's relative branches reach 255 either way.
+
+replace restart {
+	bzs	%1
+	jmp	%5
+%1:
+} by {
+	; Peephole 1a - short branch
+	bzr	%5
+%1:
+} if labelInRange(%5), labelRefCountChange(%1 -1)
+
+replace restart {
+	bzr	%1
+	jmp	%5
+%1:
+} by {
+	; Peephole 1b - short branch
+	bzs	%5
+%1:
+} if labelInRange(%5), labelRefCountChange(%1 -1)
+
+replace restart {
+	bcs	%1
+	jmp	%5
+%1:
+} by {
+	; Peephole 1c - short branch
+	bcr	%5
+%1:
+} if labelInRange(%5), labelRefCountChange(%1 -1)
+
+replace restart {
+	bcr	%1
+	jmp	%5
+%1:
+} by {
+	; Peephole 1d - short branch
+	bcs	%5
+%1:
+} if labelInRange(%5), labelRefCountChange(%1 -1)
+
+// A jump to the very next line.
+replace restart {
+	jmp	%1
+%1:
+} by {
+	; Peephole 2a - removed jmp to next line
+%1:
+} if labelRefCountChange(%1 -1)
+
+replace restart {
+	bch	%1
+%1:
+} by {
+	; Peephole 2b - removed bch to next line
+%1:
+} if labelRefCountChange(%1 -1)
+
+// A jump to a label that is itself an unconditional jump goes straight
+// to the final target (labelIsUncondJump(): %5 the label, %6 where the
+// jump there goes). A conditional branch only if that's still in reach.
+replace restart {
+	jmp	%5
+} by {
+	; Peephole 4a - jumped to %6 directly instead of via %5
+	jmp	%6
+} if labelIsUncondJump(), notSame(%5 %6), labelRefCountChange(%5 -1), labelRefCountChange(%6 +1)
+
+replace restart {
+	bch	%5
+} by {
+	; Peephole 4b - jumped to %6 directly instead of via %5
+	jmp	%6
+} if labelIsUncondJump(), notSame(%5 %6), labelRefCountChange(%5 -1), labelRefCountChange(%6 +1)
+
+replace restart {
+	bzs	%5
+} by {
+	; Peephole 4c - branched to %6 directly instead of via %5
+	bzs	%6
+} if labelIsUncondJump(), notSame(%5 %6), labelInRange(%6), labelRefCountChange(%5 -1), labelRefCountChange(%6 +1)
+
+replace restart {
+	bzr	%5
+} by {
+	; Peephole 4d - branched to %6 directly instead of via %5
+	bzr	%6
+} if labelIsUncondJump(), notSame(%5 %6), labelInRange(%6), labelRefCountChange(%5 -1), labelRefCountChange(%6 +1)
+
+replace restart {
+	bcs	%5
+} by {
+	; Peephole 4e - branched to %6 directly instead of via %5
+	bcs	%6
+} if labelIsUncondJump(), notSame(%5 %6), labelInRange(%6), labelRefCountChange(%5 -1), labelRefCountChange(%6 +1)
+
+replace restart {
+	bcr	%5
+} by {
+	; Peephole 4f - branched to %6 directly instead of via %5
+	bcr	%6
+} if labelIsUncondJump(), notSame(%5 %6), labelInRange(%6), labelRefCountChange(%5 -1), labelRefCountChange(%6 +1)
+
+// An unconditional JMP to a close label is a short BCH (2 bytes, not 3).
+replace {
+	jmp	%5
+} by {
+	; Peephole 3 - short unconditional branch
+	bch	%5
+} if labelInRange(%5)
