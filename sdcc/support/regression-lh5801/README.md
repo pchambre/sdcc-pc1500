@@ -25,6 +25,7 @@ without register allocation (every value in memory), the fallback. Every test is
 | memory | arrays, 2-D arrays, pointers, structs, string.h (incl. the TIN/SIN/LIN/CIN memcpy, memset, strcpy, strlen), calls through pointers (reentrant) |
 | calls | mixed parameter sizes, 1/2/4-byte returns, nested calls, sprintf varargs |
 | control | loops, break/continue, goto, ?:, && and \|\| short-circuit, switch |
+| elements | in-place `s[k] op= c` and `x op= c`: carries, borrows, masks, an unchainable constant, post-increments that must not fuse |
 | init | zeroed and initialized globals, static locals, const tables, rand()'s seed |
 | exitret | exit() from inside nested calls returns to BASIC |
 | library | keyWait/keyScan, lcdInputLine, lcdSetCursor, the 26-cell limit, beep, lcdInvert |

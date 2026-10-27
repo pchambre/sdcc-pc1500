@@ -324,6 +324,38 @@ markRemat (ebbIndex *ebbi)
 }
 
 /*-----------------------------------------------------------------*/
+/* markMemUpdates - `s[k] op= c` on an element at a constant address */
+/* is one in-place update, generated at its load (gen.c's            */
+/* lh5801_memUpdate()/genMemUpdate()): mark the op and the store      */
+/* generated already, and give the two temps no storage (isspilt with */
+/* no spill location -- nothing ever reads them), before the register */
+/* allocator sees any of it.                                          */
+/*-----------------------------------------------------------------*/
+static void
+markMemUpdates (ebbIndex *ebbi)
+{
+  int b;
+
+  for (b = 0; b < ebbi->count; b++)
+    {
+      iCode *ic;
+
+      for (ic = ebbi->bbOrder[b]->sch; ic; ic = ic->next)
+        {
+          iCode *st = lh5801_memUpdate (ic);
+
+          if (!st)
+            continue;
+          ic->next->generated = 1;
+          st->generated = 1;
+          OP_SYMBOL (IC_RESULT (ic))->isspilt = 1;
+          OP_SYMBOL (IC_RESULT (ic->next))->isspilt = 1;
+          ic = st;
+        }
+    }
+}
+
+/*-----------------------------------------------------------------*/
 /* lh5801_assignRegisters - phase-1 entry point: spill everything, */
 /* then generate code                                              */
 /*-----------------------------------------------------------------*/
@@ -352,6 +384,7 @@ lh5801_assignRegisters (ebbIndex *ebbi)
 
   packRegisters (ebbi);
   markRemat (ebbi);
+  markMemUpdates (ebbi);
 
   /* SDCC's tree-decomposition allocator (ralloc2.cc; not with --oldralloc) puts
      what it can in registers; every other iTemp still gets a static spill
