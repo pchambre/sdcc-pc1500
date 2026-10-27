@@ -606,8 +606,17 @@ genAddrOf (const iCode *ic)
      the way any other array does for `arg = __va_start;`), computed
      fresh, at runtime, every time it's taken. Same "frame pointer +
      compile-time-constant offset" as genFunction()'s shadow-copy, just
-     stored directly into the result instead of dereferenced further. */
-  if (sym->onStack)
+     stored directly into the result instead of dereferenced further.
+
+     A named parameter, though, has that static shadow copy, and every
+     other use of it reads and writes the shadow -- so its address must
+     be the shadow's too, or a write through the pointer goes to the stack
+     copy nobody reads again. (sprintf()'s `&buf` was exactly this: the
+     output pointer advanced on the stack while `*buf = 0` used the
+     shadow, still at the start, and overwrote the first character.) */
+  if (sym->onStack && sym->isspilt && sym->usl.spillLoc)
+    sym = sym->usl.spillLoc;
+  else if (sym->onStack)
     {
       wassertl (offset >= 0,
         "lh5801: ADDRESS_OF a stack symbol needs a non-negative offset");
@@ -805,14 +814,6 @@ genCall (const iCode *ic)
       emitcode ("sjp", "%s", sym->rname[0] ? sym->rname : sym->name);
     }
 
-  while (parmBytes >= 2)
-    {
-      emitcode ("pop", "x");
-      parmBytes -= 2;
-    }
-  if (parmBytes)
-    emitcode ("pop", "a");
-
   if (IC_RESULT (ic))
     {
       operand *result = IC_RESULT (ic);
@@ -873,6 +874,18 @@ genCall (const iCode *ic)
 
       freeAsmop (result);
     }
+
+  /* The pushed arguments come off only after the result is stored: POP A
+     and POP X would otherwise overwrite the value the callee returned in
+     A/X -- every call with stack arguments (reentrant or varargs) that
+     used its result got the last argument byte instead. */
+  while (parmBytes >= 2)
+    {
+      emitcode ("pop", "x");
+      parmBytes -= 2;
+    }
+  if (parmBytes)
+    emitcode ("pop", "a");
 }
 
 /*-----------------------------------------------------------------*/

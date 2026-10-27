@@ -8,8 +8,9 @@ checks the final linked bytes against expected values.
 This only re-checks the static compile+assemble+link output (fast, no
 emulator dependency) -- it doesn't re-run the emulated CPU. The semantics
 (that this actually executes correctly -- P1 ends up holding 1, and
-control correctly returns from main() into the startup code's forever
-loop) were verified by hand in pc1500emu on 2026-07-27; see
+control returns from main() through the startup code back to BASIC) are
+covered by support/regression-lh5801/run.sh, which runs real programs on
+pc1500emu; originally verified by hand there on 2026-07-27; see
 docs/lh5801_hardware_reference.md in pc1500emu, and
 lh5801-pc1500-project-plan / lh5801-sdas-no-dead-code-elimination in
 project memory for the wider context.
@@ -33,15 +34,16 @@ SDCC = os.path.abspath(os.environ.get("SDCC", os.path.join(TOP, "bin", "sdcc")))
 ASLH5801 = os.path.abspath(os.environ.get("ASLH5801", os.path.join(TOP, "bin", "sdaslh5801")))
 SDLD = os.path.abspath(os.environ.get("SDLD", os.path.join(TOP, "bin", "sdld")))
 SMOKE_C = os.path.join(HERE, "smoke_test", "smoke.c")
+EXIT_ASM = os.path.join(TOP, "device", "lib", "lh5801", "exit.asm")
 
 # Base addresses chosen to fit within a bare PC-1500's built-in 2K RAM
 # (4000H-47FFH), clear of the 4000H-40C4H reserve area -- see
 # lh5801_setDefaultOptions()'s comment in main.c.
 AREA_BASES = {
     "HOME": 0x4200,
-    "GSINIT": 0x4210,
-    "GSFINAL": 0x4230,
-    "CODE": 0x4240,
+    "GSINIT": 0x4210,   # the startup: zero DATA, copy INITIALIZER (47 bytes)
+    "GSFINAL": 0x4240,  # save S, call main, back to BASIC (18 bytes)
+    "CODE": 0x4260,
     "CONST": 0x4300,
     "INITIALIZER": 0x4310,
     "DATA": 0x4600,
@@ -49,21 +51,27 @@ AREA_BASES = {
     "INITIALIZED": 0x4620,
 }
 
+# GSINIT (4210H): psh y / psh u, zero l_DATA (10H) bytes from s_DATA
+# (4600H), copy l_INITIALIZER (0) bytes from 4310H to 4620H. GSFINAL
+# (4240H): S into __sdcc_lh5801_sp (460CH), sjp _main, pop u / pop y /
+# rtn. CODE (4260H): main's `P1 = 1`, then exit.asm's exit(), which puts S
+# back and jumps to GSFINAL's pop u (424DH). HOME is empty.
 EXPECTED_IHX = [
-    ":08421000AA47FFBE42409E02D6",
-    ":03423000BA42008F",
-    ":03420000BE42407B",
-    ":06424000B501AE46079A2D",
+    ":20421000FD98FDA848464A0058005A10948903148B06B50041569E0C48434A1058465A2002",
+    ":0F42300068006A00A48903248B054551669E0B24",
+    ":12424000FD4884AE460C04AE460DBE4260FD2AFD1A9A66",
+    ":13426000B501AE460B9AA5460C08A5460D0AFD4EBA424D67",
 ]
 
-# _P1 sits at DATA+7, not DATA+0: genLH5801AssemblerStart() reserves 7
+# _P1 sits at DATA+11, not DATA+0: genLH5801AssemblerStart() reserves 11
 # bytes of per-module scratch ahead of any real user DATA variable
 # (__lh5801_cmp_scratch/_frame_ptr/_shift_scratch/_cmp_result_msb/
-# _cmp_signA/_cmp_signed_lt -- see gen.c's own comment there for why
-# each one is declared unconditionally up front rather than lazily).
+# _cmp_signA/_cmp_signed_lt/_remat0/_remat1 -- see gen.c's own comment
+# there for why each one is declared unconditionally up front rather than
+# lazily).
 EXPECTED_SYMBOLS = {
-    "_main": 0x4240,
-    "_P1": 0x4607,
+    "_main": 0x4260,
+    "_P1": 0x460B,
 }
 
 
@@ -92,15 +100,19 @@ def main():
             print(f"COMPILE FAILED:\n{out}\n{err}")
             sys.exit(1)
 
-        rc, out, err = run([ASLH5801, "-l", "-o", "smoke.asm"], cwd=tmpdir)
-        if rc != 0 or "error" in (out + err).lower():
-            print(f"ASSEMBLE FAILED:\n{out}\n{err}")
-            sys.exit(1)
+        # -g: the startup code's s_DATA/l_DATA/... are sdld's own area
+        # symbols, undefined until link time. exit.asm holds
+        # __sdcc_lh5801_sp, which the startup always references.
+        for src, rel in (("smoke.asm", "smoke.rel"), (EXIT_ASM, "exit.rel")):
+            rc, out, err = run([ASLH5801, "-lg", "-o", rel, src], cwd=tmpdir)
+            if rc != 0 or "error" in (out + err).lower():
+                print(f"ASSEMBLE FAILED ({src}):\n{out}\n{err}")
+                sys.exit(1)
 
         link_cmd = [SDLD, "-mjxi"]
         for area, addr in AREA_BASES.items():
             link_cmd += ["-b", f"{area}=0x{addr:04x}"]
-        link_cmd += ["-o", "smoke.ihx", "smoke.rel"]
+        link_cmd += ["-o", "smoke.ihx", "smoke.rel", "exit.rel"]
         rc, out, err = run(link_cmd, cwd=tmpdir)
         if rc != 0:
             print(f"LINK FAILED:\n{out}\n{err}")
