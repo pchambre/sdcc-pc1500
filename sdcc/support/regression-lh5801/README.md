@@ -14,7 +14,9 @@ support/regression-lh5801/run.sh calls      # one test
 ```
 
 Run from WSL (the compiler builds there); a Windows `pc1500runner.exe` works
-too. Every test is built at 00C5 and run with 28K of contiguous RAM
+too. `SDCCFLAGS` passes extra compiler options to every build, the runtime
+library's included -- e.g. `SDCCFLAGS=--newralloc run.sh` runs the suite with
+the tree-decomposition register allocator. Every test is built at 00C5 and run with 28K of contiguous RAM
 (16K at 0000H + 2K + 10K at 4800H), after `NEW` reserves its RAM.
 
 | test | covers |

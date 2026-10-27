@@ -66,15 +66,54 @@ lh5801_setDefaultOptions (void)
   options.out_fmt = 'i';     /* ihx */
 }
 
+bool lh5801_newralloc = false;
+/* The halves of X, Y and U -- see ralloc2.cc's inst_sane() for where
+   gen.c can keep a value in each. Not A yet: it's gen.c's scratch in
+   every iCode. */
+unsigned int lh5801_reg_mask = (1u << LH5801_REG_XL) | (1u << LH5801_REG_XH) |
+                               (1u << LH5801_REG_YL) | (1u << LH5801_REG_YH) |
+                               (1u << LH5801_REG_UL) | (1u << LH5801_REG_UH);
+
+/* port->parseOption is called unconditionally from SDCCmain.c's
+   parseCmdLine with no NULL guard, unlike several other PORT hooks.
+     --newralloc               the tree-decomposition allocator (ralloc2.cc)
+     --lh5801-regs=yl,yh,...   which registers it may use (a, xl, xh, yl,
+                               yh, ul, uh) */
 static bool
 lh5801_parseOptions (int *pargc, char **argv, int *i)
 {
+  static const char regsOpt[] = "--lh5801-regs=";
+
   (void) pargc;
-  (void) argv;
-  (void) i;
-  return false; /* No port-specific options yet; port->parseOption is called
-                   unconditionally from SDCCmain.c's parseCmdLine with no
-                   NULL guard, unlike several other PORT hooks. */
+  if (!strcmp (argv[*i], "--newralloc"))
+    {
+      lh5801_newralloc = true;
+      return true;
+    }
+  if (!strncmp (argv[*i], regsOpt, sizeof (regsOpt) - 1))
+    {
+      char *list = Safe_strdup (argv[*i] + sizeof (regsOpt) - 1);
+      char *name;
+
+      lh5801_reg_mask = 0;
+      for (name = strtok (list, ","); name; name = strtok (NULL, ","))
+        {
+          int r;
+
+          for (r = 0; r < LH5801_NUM_REGS; r++)
+            if (!strcmp (name, lh5801_regs[r].name))
+              break;
+          if (r == LH5801_NUM_REGS)
+            {
+              fprintf (stderr, "lh5801: unknown register '%s' in %s\n", name, argv[*i]);
+              exit (1);
+            }
+          lh5801_reg_mask |= 1u << r;
+        }
+      Safe_free (list);
+      return true;
+    }
+  return false;
 }
 
 static void
@@ -514,7 +553,9 @@ PORT lh5801_port =
      assembler with no local-label scoping at all. */
   0,                            /* do NOT reset labelKey per function */
   1,                            /* globals & local statics allowed */
-  2,                            /* num_regs -- unused (no tree-decomposition
-                                    allocator in phase 1), matches lh5801_regs[] */
+  LH5801_NUM_REGS,              /* num_regs: A, XL..UH -- the registers the
+                                    tree-decomposition allocator
+                                    (ralloc2.cc, --newralloc) assigns, the
+                                    first entries of lh5801_regs[] */
   PORT_MAGIC
 };

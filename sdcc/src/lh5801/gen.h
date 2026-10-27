@@ -53,20 +53,6 @@ typedef enum
 }
 AOP_TYPE;
 
-/* The 8-bit registers a value byte can live in: A, and the halves of the
-   X/Y/U pointer registers. Indices into gen.c's register-name table. */
-enum
-{
-  LH5801_REG_A = 0,
-  LH5801_REG_XL,
-  LH5801_REG_XH,
-  LH5801_REG_YL,
-  LH5801_REG_YH,
-  LH5801_REG_UL,
-  LH5801_REG_UH,
-  LH5801_NUM_REGS
-};
-
 typedef struct asmop
 {
   AOP_TYPE type;
@@ -86,6 +72,10 @@ typedef struct asmop
 asmop;
 
 void genLH5801Code (iCode *);
+
+/* The register allocator's dry run: the size in bytes of one iCode's
+   code with its operands' candidate registers, emitting nothing. */
+float drylh5801iCode (iCode *ic);
 
 /* Emits a bare label definition for any basic block SDCCBBlock.c's
    iCodeFromeBBlock() silently dropped from genLH5801Code()'s own linear
