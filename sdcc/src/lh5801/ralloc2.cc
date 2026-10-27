@@ -21,13 +21,14 @@
 // allows:
 //   - only values of one or two bytes live in registers, wholly;
 //   - only in the registers lh5801_reg_mask allows (main.c, --lh5801-regs),
-//     and for now never A or XL/XH: gen.c uses A as its scratch inside
-//     every iCode and X as its pointer register, without yet checking
-//     whether a live value is there;
+//     and never A: it's gen.c's scratch inside every iCode;
 //   - nothing in a register survives a call or inline asm (they preserve
-//     no registers).
-// In this port's generated code nothing else touches Y or U, so those
-// rules make a byte in YL..UH safe everywhere else.
+//     no registers);
+//   - at the few iCodes where gen.c uses X itself -- pointer accesses,
+//     returns, a stack parameter's address -- nothing is in X but the
+//     operand that is X, whole (x_sane()).
+// In this port's generated code nothing else touches Y or U, so a byte in
+// YL..UH is safe everywhere but across a call.
 
 #define TD_SALLOC
 #define CH_SALLOC

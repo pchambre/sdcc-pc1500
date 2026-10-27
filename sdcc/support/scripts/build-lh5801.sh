@@ -60,7 +60,7 @@ DEVICE_INCLUDE_LH5801="$SDCC_ROOT/device/include/lh5801"
 DEVICE_LIB_LH5801="$SDCC_ROOT/device/lib/lh5801"
 DEVICE_LIB="$SDCC_ROOT/device/lib"
 # SDCCFLAGS (environment): extra sdcc options for every compile, the
-# runtime library's included -- e.g. SDCCFLAGS=--newralloc. Each set of
+# runtime library's included -- e.g. SDCCFLAGS=--oldralloc. Each set of
 # flags gets its own library cache.
 SDCCFLAGS="${SDCCFLAGS:-}"
 LIB_CACHE="$SDCC_ROOT/device/lib/build/lh5801"
