@@ -2560,12 +2560,21 @@ glue (void)
       else if(TARGET_PDK_LIKE)
         fprintf (asmFile, "\tgoto\t__sdcc_program_startup\n");
       else if (TARGET_IS_LH5801)
-        /* Dead code for us: lh5801_genInitStartup() already jumps straight
-           to _main itself. This block still has to assemble, though --
-           JMP (absolute), not BCH (short relative), since the target lives
-           in a different area (HOME) and aslh5801 rejects cross-area BCH
-           targets. */
-        fprintf (asmFile, "\tjmp\t__sdcc_program_startup\n");
+        /* The end of startup (see lh5801_genInitStartup()): every
+           module's GSINIT has run, so save S for exit()
+           (device/lib/lh5801/exit.asm), call main, restore what startup
+           saved for BASIC, and return to BASIC's CALL. */
+        fprintf (asmFile,
+                 "\tldx\ts\n"
+                 "\tlda\txh\n"
+                 "\tsta\t(__sdcc_lh5801_sp)\n"
+                 "\tlda\txl\n"
+                 "\tsta\t(__sdcc_lh5801_sp + 1)\n"
+                 "\tsjp\t_main\n"
+                 "__sdcc_lh5801_exit::\n"
+                 "\tpop\tu\n"
+                 "\tpop\ty\n"
+                 "\trtn\n");
       else
         fprintf (asmFile, "\t%cjmp\t__sdcc_program_startup\n", options.acall_ajmp ? 'a' : 'l');
     }
@@ -2592,8 +2601,10 @@ glue (void)
       else if(TARGET_PDK_LIKE)
         fprintf (asmFile, "\tgoto\t_main\n");
       else if (TARGET_IS_LH5801)
-        /* Dead code for us -- see the __sdcc_program_startup branch above. */
-        fprintf (asmFile, "\tsjp\t_main\n");
+        /* Nothing: HOME is first in the image, so this label is the load
+           address and execution falls through into GSINIT's startup code
+           (lh5801_genInitStartup()). main is called from GSFINAL. */
+        ;
       else
         {
           if (IFFUNC_ISNORETURN (mainf->type))

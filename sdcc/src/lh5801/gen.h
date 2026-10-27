@@ -36,7 +36,15 @@ typedef enum
 {
   AOP_LIT,
   AOP_DIR,
-  AOP_FUNC
+  AOP_FUNC,
+  /* A rematerializable iTemp (ralloc.c's markRemat()) -- one whose only
+     value is a link-time-constant address, "&sym + k" (an array element
+     or struct member of a global or static, through any number of
+     constant additions and pointer casts). It has no storage at all: a
+     pointer load or store through it is a plain direct "lda/sta (sym +
+     k)", any other use of its value is ">(sym + k)"/"<(sym + k)", and the
+     iCodes that only computed it emit nothing. */
+  AOP_IMMD
 }
 AOP_TYPE;
 
@@ -50,7 +58,8 @@ typedef struct asmop
       char *dir;    /* AOP_DIR: base address text; byte i (0 = first
                         emitted byte) lives at "dir + i".
                         AOP_FUNC: the function's own rname, read via
-                        ">dir"/"<dir" instead of "(dir + i)". */
+                        ">dir"/"<dir" instead of "(dir + i)".
+                        AOP_IMMD: the address expression, "(sym + k)". */
     }
   u;
 }

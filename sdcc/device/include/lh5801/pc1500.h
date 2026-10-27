@@ -4,7 +4,7 @@
    Paul Chambre, 2026
 
    Every function declared here is a thin, hand-written assembly shim
-   (device/lib/lh5801/*.asm) that either calls straight into the real
+   (the .asm files in device/lib/lh5801/) that either calls straight into the real
    ROM's own SBRxx vector table (0xFF80-0xFFFE, entered via the VMJ
    opcode -- see /home/paul/Documents/PC1500/ASMADDR.txt) or reads a
    fixed hardware I/O register directly. Nothing here duplicates ROM
@@ -47,6 +47,54 @@
 extern void lcdPutChar(unsigned char c);
 extern void lcdClear(void);
 
+/* The Graphic Cursor Unit itself: the raw column (0-155) the next
+   lcdPutChar() draws at. */
+#define PC1500_GCU (*(volatile unsigned char *)0x7875)
+
+/* --- More LCD (device/lib/lh5801/lcd_cursor.asm, lcd_string.c) ---------
+   lcdSetCursor() is BASIC's CURSOR: character cell 0-25, 6 columns each.
+   lcdInvert() inverts every dot on the display (the Technical Reference
+   Manual's own "display reverse" routine); calling it again restores it.
+   lcdPutString() prints a C string from the cursor. */
+extern void lcdSetCursor(unsigned char cell);
+extern void lcdInvert(void);
+extern void lcdPutString(const char *s);
+
+/* --- Keyboard (device/lib/lh5801/keyboard.asm) -------------------------
+   The ROM's own key scanners. keyWait() (E243H) sleeps until a key is
+   pressed and returns its code, or PC1500_KEY_BREAK for BREAK (ON).
+   keyScan() (E42CH) returns the key down right now, or 0 -- like BASIC's
+   INKEY$, a held key keeps reading as pressed. Letters and digits read
+   as their (uppercase) ASCII codes. */
+extern unsigned char keyWait(void);
+extern unsigned char keyScan(void);
+#define PC1500_KEY_ENTER 0x0D
+#define PC1500_KEY_CL    0x18
+#define PC1500_KEY_UP    0x0B
+#define PC1500_KEY_DOWN  0x0A
+#define PC1500_KEY_BREAK 0x0E  /* keyWait() only; not a key-table code */
+
+/* BASIC-INPUT-style line entry (device/lib/lh5801/lcd_string.c), echoed
+   from the current cursor: up to max characters (buf needs max + 1),
+   CL clears, ENTER ends. Returns the length -- 0 for a bare ENTER, which
+   is how INPUT keeps a default -- or PC1500_INPUT_BREAK for BREAK. */
+extern unsigned char lcdInputLine(char *buf, unsigned char max);
+#define PC1500_INPUT_BREAK 0xFF
+
+/* --- Ending the program (device/lib/lh5801/exit.asm) -------------------
+   C's exit(), from any depth: back to BASIC's CALL, exactly as returning
+   from main() does. The status is ignored. (SDCC's own stdlib.h doesn't
+   declare exit() for any port.) */
+extern void exit(int status);
+
+/* --- Buzzer (device/lib/lh5801/beep.asm) -------------------------------
+   The ROM's own BEEP tone loop (E66FH). beep() is BASIC's BEEP 1.
+   beepTone() plays `periods` periods of a square wave whose half period
+   is a `halfPeriod`-iteration delay loop (bigger = lower; 0 = 256). Both
+   stop early on BREAK. Neither looks at BEEP ON/OFF. */
+extern void beep(void);
+extern void beepTone(unsigned char halfPeriod, unsigned int periods);
+
 /* --- ON key (device/lib/lh5801/onkey.asm) -----------------------------
    Reads Port B bit 7 directly (I/O space, register 0x0F) rather than
    going through the ROM's BREAK-key test (SBRA6) -- pc1500emu's ON key
@@ -62,6 +110,13 @@ extern unsigned char onKeyPressed(void);
    it doesn't end in RTN and branches into BASIC's own dispatch loop),
    just 3 raw CPU instructions -- nothing here duplicates ROM code. */
 extern void idleTick(void);
+
+/* delayTicks(n) (device/lib/lh5801/delay.c): n idleTick()s.
+   PC1500_TICKS_PER_SECOND is measured in pc1500emu (1000 delayTicks()
+   ticks took 2.78s), whose timer rate was calibrated against a real
+   PC-1500's cursor blink to stopwatch precision -- so about 10%. */
+extern void delayTicks(unsigned int ticks);
+#define PC1500_TICKS_PER_SECOND 360
 
 /* --- CE-150 cassette tape send (device/lib/lh5801/tape_send_char.asm) -
    VMJ 0xA8 (SBRA8) -- unlike every other function in this header, this

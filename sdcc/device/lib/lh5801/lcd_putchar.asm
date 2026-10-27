@@ -62,6 +62,10 @@
 ; involved, since this function is not reentrant/variadic.
 ;-----------------------------------------------------------------
 _lcdPutChar:
+	lda	(0x7875)	; past the last 6-column cell (GCU > 150), a
+	cpi	a, 151		; character would be drawn outside the display
+	bcs	lcdPutChar_full	; buffer -- drop it instead, so the line is
+				; simply cut at 26 characters
 	vmj	0x8C		; X = real display-buffer address for the
 				; current Graphic Cursor position
 	lda	(_lcdPutChar_PARM_1)
@@ -73,6 +77,7 @@ _lcdPutChar:
 	vmj	0x8E		; 1-column inter-character gap cell width.
 	vmj	0x8E
 	vmj	0x8E
+lcdPutChar_full:
 	rtn
 
 	.area DATA

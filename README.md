@@ -22,14 +22,18 @@ different here.
   `sdas` framework used by SDCC's other targets.
 - **`sdcc/device/lib/lh5801/`** and **`sdcc/device/include/lh5801/`** — a
   small runtime library, and its header (`pc1500.h`), giving C programs
-  access to real PC-1500 hardware and ROM functionality: LCD output, the
-  ON key, power-conscious idle/halt, cassette I/O, and ROM-native
-  numeric routines (the PC-1500's own floating-point format and math
-  functions).
+  access to real PC-1500 hardware and ROM functionality: LCD output
+  (characters, strings, BASIC's CURSOR, display reverse), the keyboard
+  (blocking and INKEY$-style), BASIC-INPUT-style line entry, the buzzer,
+  the ON key, power-conscious idle/halt and delays, `exit()` back to
+  BASIC, cassette I/O, and ROM-native numeric routines (the PC-1500's own
+  floating-point format and math functions).
 - **`sdcc/support/scripts/build-lh5801.sh`** — a wrapper script that
-  compiles, assembles, and links a C source file into a padding-free flat
+  compiles, assembles, and links C source files into a padding-free flat
   binary ready to load onto a real PC-1500 (or the emulator below) at a
-  chosen address.
+  chosen address, pulling in only the runtime modules the program uses.
+- **`sdcc/device/examples/lh5801/`** — example programs, including
+  `blackjack/`, a port of Antony F. P. Vickery's 1984 BASIC Blackjack.
 
 ## Changes to core (non-LH5801) SDCC
 
@@ -100,11 +104,17 @@ make
 Then, to compile a C program for the PC-1500:
 
 ```sh
-sdcc/support/scripts/build-lh5801.sh myprogram.c [load_address_hex]
+sdcc/support/scripts/build-lh5801.sh myprogram.c [more.c ...] [load_address_hex]
 ```
 
-See the script's own header comment for details (default load address,
-output naming, and hardware caveats it warns about).
+The program runs by `CALL &<load address>` from BASIC, and returns to
+BASIC when `main()` returns or `exit()` is called. The startup code
+zeroes globals and copies initialized data on every CALL, so a program
+can simply be run again. Its RAM includes uninitialized data after the
+image, so reserve it from BASIC first with `NEW &<address>`. The script
+prints that address, with the load address and image size. Load it at the
+bottom of user RAM: `40C5` on a machine with RAM from 4000H, or `00C5`
+with 16K at 0000H. See the script's own header comment for details.
 
 ### Building on Windows
 
