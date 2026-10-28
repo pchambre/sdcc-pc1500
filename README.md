@@ -24,7 +24,10 @@ different here.
   at the same time share it. A function that isn't `static` keeps memory of
   its own if it calls the library or another module (which could call it
   back), so declaring helpers `static` saves RAM; `--lh5801-no-overlay`
-  turns overlaying off. 32-bit copies, constant stores, add, subtract,
+  turns overlaying off. The first 1-byte parameter is passed in A and the
+  first 2-byte one in X (`main.c`'s `lh5801_reg_parm()`); the others go to
+  the callee's `_PARM_n` bytes, and reentrant and varargs functions take
+  theirs on the stack. 32-bit copies, constant stores, add, subtract,
   negate, shifts and ordered compares of values in memory call small
   runtime helpers (`device/lib/lh5801/_lh5801_*4.asm`, operand addresses
   inline after the call) instead of expanding byte by byte;

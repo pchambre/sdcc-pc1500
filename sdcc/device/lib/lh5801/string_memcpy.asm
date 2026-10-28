@@ -18,22 +18,22 @@
 	.area CODE
 
 	.globl ___memcpy
-	.globl ___memcpy_PARM_1
 	.globl ___memcpy_PARM_2
 	.globl ___memcpy_PARM_3
 
 ;-----------------------------------------------------------------
 ; void *__memcpy(void *dest, const void *src, size_t n);  -- returns dest
 ;-----------------------------------------------------------------
-___memcpy:
+___memcpy:			; dest in X
+	lda	xh
+	sta	yh
+	lda	xl
+	sta	yl
+	psh	y		; dest, to return
 	lda	(___memcpy_PARM_2)
 	sta	xh
 	lda	(___memcpy_PARM_2 + 1)
 	sta	xl
-	lda	(___memcpy_PARM_1)
-	sta	yh
-	lda	(___memcpy_PARM_1 + 1)
-	sta	yl
 	lda	(___memcpy_PARM_3)
 	sta	uh
 	lda	(___memcpy_PARM_3 + 1)
@@ -48,15 +48,10 @@ memcpy_byte:
 	dec	u
 	bch	memcpy_loop
 memcpy_done:
-	lda	(___memcpy_PARM_1)
-	sta	xh
-	lda	(___memcpy_PARM_1 + 1)
-	sta	xl
+	pop	x
 	rtn
 
 	.area DATA
-___memcpy_PARM_1:
-	.ds 2
 ___memcpy_PARM_2:
 	.ds 2
 ___memcpy_PARM_3:

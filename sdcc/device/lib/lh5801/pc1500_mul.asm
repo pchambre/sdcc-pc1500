@@ -22,7 +22,6 @@
 	.area CODE
 
 	.globl _pc1500Mul
-	.globl _pc1500Mul_PARM_1
 	.globl _pc1500Mul_PARM_2
 	.globl __pc1500_fp_copyin
 	.globl __pc1500_fp_copyin2
@@ -32,10 +31,7 @@
 ; void pc1500Mul(pc1500_float_t a, pc1500_float_t b);
 ;-----------------------------------------------------------------
 _pc1500Mul:
-	lda	(_pc1500Mul_PARM_1)
-	sta	xh
-	lda	(_pc1500Mul_PARM_1 + 1)
-	sta	xl
+	psh	x		; the first argument, passed in X: for the copy out
 	sjp	__pc1500_fp_copyin
 
 	lda	(_pc1500Mul_PARM_2)
@@ -50,15 +46,10 @@ _pc1500Mul:
 	ldi	yl, 0x10
 	sjp	0xF01A
 
-	lda	(_pc1500Mul_PARM_1)
-	sta	xh
-	lda	(_pc1500Mul_PARM_1 + 1)
-	sta	xl
+	pop	x
 	sjp	__pc1500_fp_copyout
 	rtn
 
 	.area DATA
-_pc1500Mul_PARM_1:
-	.ds 2
 _pc1500Mul_PARM_2:
 	.ds 2

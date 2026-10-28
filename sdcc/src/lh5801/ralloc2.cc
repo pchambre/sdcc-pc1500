@@ -248,6 +248,25 @@ static bool inst_sane(const assignment &a, unsigned short int i, const G_t &G, c
   if (!x_sane(a, i, G, I))
     return false;
 
+  // Register parameters (gen.c's loadSends()/genReceive()): a 2-byte one
+  // moves between X and its place through A a byte at a time, so a value
+  // partly in X must be X exactly; and the 1-byte one arriving in A is
+  // received first, so it can't go in X while the X one still waits there.
+  if (ic->op == SEND && ic->argreg == 2 && uses_x(IC_LEFT(ic), a, i, G, I) && !exactly_x(IC_LEFT(ic), a, i, G, I))
+    return false;
+  if (ic->op == RECEIVE && ic->argreg == 2 && uses_x(IC_RESULT(ic), a, i, G, I) &&
+      !exactly_x(IC_RESULT(ic), a, i, G, I))
+    return false;
+  if (ic->op == RECEIVE && ic->argreg == 1 && uses_x(IC_RESULT(ic), a, i, G, I))
+    {
+      for (const iCode *r = ic->prev; r && r->op == RECEIVE; r = r->prev)
+        if (r->argreg == 2)
+          return false;
+      for (const iCode *r = ic->next; r && r->op == RECEIVE; r = r->next)
+        if (r->argreg == 2)
+          return false;
+    }
+
   bool clobbers_all = ic->op == CALL || ic->op == PCALL || ic->op == INLINEASM;
 
   for (cfg_alive_t::const_iterator v = G[i].alive.begin(); v != G[i].alive.end(); ++v)

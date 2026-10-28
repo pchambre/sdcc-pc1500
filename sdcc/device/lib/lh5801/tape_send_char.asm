@@ -31,17 +31,13 @@
 	.area CODE
 
 	.globl _tapeSendChar
-	.globl _tapeSendChar_PARM_1
 
 ;-----------------------------------------------------------------
 ; void tapeSendChar(unsigned char c);
 ;-----------------------------------------------------------------
-_tapeSendChar:
-	lda	(_tapeSendChar_PARM_1)
+_tapeSendChar:			; c in A
 	sta	yh
 	vmj	0xA8
 	rtn
 
 	.area DATA
-_tapeSendChar_PARM_1:
-	.ds 1

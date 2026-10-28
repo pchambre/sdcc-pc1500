@@ -14,18 +14,14 @@
 	.area CODE
 
 	.globl _memset
-	.globl _memset_PARM_1
 	.globl _memset_PARM_2
 	.globl _memset_PARM_3
 
 ;-----------------------------------------------------------------
 ; void *memset(void *s, int c, size_t n);  -- returns s
 ;-----------------------------------------------------------------
-_memset:
-	lda	(_memset_PARM_1)
-	sta	xh
-	lda	(_memset_PARM_1 + 1)
-	sta	xl
+_memset:			; s in X
+	psh	x		; s, to return
 	lda	(_memset_PARM_3)
 	sta	uh
 	lda	(_memset_PARM_3 + 1)
@@ -41,15 +37,10 @@ memset_byte:
 	dec	u
 	bch	memset_loop
 memset_done:
-	lda	(_memset_PARM_1)
-	sta	xh
-	lda	(_memset_PARM_1 + 1)
-	sta	xl
+	pop	x
 	rtn
 
 	.area DATA
-_memset_PARM_1:
-	.ds 2
 _memset_PARM_2:
 	.ds 2
 _memset_PARM_3:

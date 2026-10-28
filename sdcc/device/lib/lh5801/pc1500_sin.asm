@@ -22,7 +22,6 @@
 	.area CODE
 
 	.globl _pc1500Sin
-	.globl _pc1500Sin_PARM_1
 	.globl __pc1500_fp_copyin
 	.globl __pc1500_fp_copyout
 
@@ -30,23 +29,15 @@
 ; void pc1500Sin(pc1500_float_t v);
 ;-----------------------------------------------------------------
 _pc1500Sin:
-	lda	(_pc1500Sin_PARM_1)
-	sta	xh
-	lda	(_pc1500Sin_PARM_1 + 1)
-	sta	xl
+	psh	x		; the first argument, passed in X: for the copy out
 	sjp	__pc1500_fp_copyin
 
 	ldi	xh, 0x7a
 	ldi	xl, 0x00
 	sjp	0xF3A2
 
-	lda	(_pc1500Sin_PARM_1)
-	sta	xh
-	lda	(_pc1500Sin_PARM_1 + 1)
-	sta	xl
+	pop	x
 	sjp	__pc1500_fp_copyout
 	rtn
 
 	.area DATA
-_pc1500Sin_PARM_1:
-	.ds 2

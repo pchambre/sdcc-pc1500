@@ -51,24 +51,22 @@
 	.area CODE
 
 	.globl _lcdPutChar
-	.globl _lcdPutChar_PARM_1
 
 ;-----------------------------------------------------------------
 ; void lcdPutChar(unsigned char c);
 ;
-; Non-reentrant C calling convention (this port's default): the caller
-; writes the argument directly to _lcdPutChar_PARM_1 before calling,
-; confirmed via a standalone compile of a plain call site -- no IPUSH
-; involved, since this function is not reentrant/variadic.
+; c arrives in A (a register parameter, see src/lh5801/main.c); it's kept
+; in lcdPutChar_c across the ROM calls below.
 ;-----------------------------------------------------------------
-_lcdPutChar:
+_lcdPutChar:			; c in A
+	sta	(lcdPutChar_c)
 	lda	(0x7875)	; past the last 6-column cell (GCU > 150), a
 	cpi	a, 151		; character would be drawn outside the display
 	bcs	lcdPutChar_full	; buffer -- drop it instead, so the line is
 				; simply cut at 26 characters
 	vmj	0x8C		; X = real display-buffer address for the
 				; current Graphic Cursor position
-	lda	(_lcdPutChar_PARM_1)
+	lda	(lcdPutChar_c)
 	vmj	0x8A		; draw the character at X using the ROM's
 				; own font table
 	vmj	0x8E		; advance the Graphic Cursor Unit by one
@@ -81,5 +79,5 @@ lcdPutChar_full:
 	rtn
 
 	.area DATA
-_lcdPutChar_PARM_1:
+lcdPutChar_c:
 	.ds 1

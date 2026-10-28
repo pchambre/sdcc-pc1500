@@ -26,6 +26,8 @@ without register allocation (every value in memory), the fallback. Every test is
 | compare | 16/32-bit compares, all six operators, as branches and values: against the largest literal, literals with zero low bytes, signed boundaries, variables (> and <= swap operands) |
 | long | the 32-bit helpers: copies, constant stores, add/sub in place, into a third variable and into the right operand, self-aliasing, shifts (signed, unsigned, in place, by bytes and bits), negation, registers live around them |
 | calls | mixed parameter sizes, 1/2/4-byte returns, nested calls, sprintf varargs |
+| regparm | register parameters (first 1-byte in A, first 2-byte in X) in either order, with wider ones, as other calls' arguments, kept across the callee's own calls, unused |
+| numeric | the ROM-number wrappers (pc1500.h): add, subtract, multiply, divide, square root, abs and STR$ on the real ROM |
 | control | loops, break/continue, goto, ?:, && and \|\| short-circuit, switch |
 | elements | in-place `s[k] op= c`, `s[i] op= c`, `p->f op= c` and `x op= c`: carries, borrows, masks, an unchainable constant, a pointer still needed afterwards, post-increments that must not fuse |
 | overlay | overlaid locals survive call chains, calls as arguments, calls through pointers (taken by name or from an initializer) and recursion |

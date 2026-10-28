@@ -20,7 +20,6 @@
 	.area CODE
 
 	.globl _exit
-	.globl _exit_PARM_1
 	.globl __sdcc_lh5801_sp
 	.globl __sdcc_lh5801_exit
 
@@ -37,6 +36,4 @@ _exit:
 
 	.area DATA
 __sdcc_lh5801_sp::
-	.ds 2
-_exit_PARM_1:
 	.ds 2
