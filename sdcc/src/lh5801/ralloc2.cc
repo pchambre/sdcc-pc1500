@@ -151,6 +151,17 @@ static bool exactly_x(const operand *o, const assignment &a, unsigned short int 
   return operand_regs(o, a, i, G, I, r) == 2 && r[0] == LH5801_REG_XH && r[1] == LH5801_REG_XL;
 }
 
+// Is operand o's value dead after node i?
+template <class G_t, class I_t>
+static bool operand_dying(const operand *o, unsigned short int i, const G_t &G, const I_t &I)
+{
+  operand_map_t::const_iterator oi, oi_end;
+  for (boost::tie(oi, oi_end) = G[i].operands.equal_range(OP_SYMBOL_CONST(o)->key); oi != oi_end; ++oi)
+    if (G[i].dying.find(oi->second) == G[i].dying.end())
+      return false;
+  return true;
+}
+
 // X is gen.c's own register for a few iCodes: pointer accesses (it loads
 // the pointer into X -- unless the pointer already is X), the address of a
 // stack parameter (loadStackAddrToX()), and calls and returns (a 2-byte
@@ -173,6 +184,11 @@ static bool x_sane(const assignment &a, unsigned short int i, const G_t &G, cons
         return false;
       allowed = IC_LEFT(ic);
       allowed_ok = exactly_x(allowed, a, i, G, I);
+      // with an offset gen.c moves X to the element (loadPtrX()), so the
+      // pointer can only be X if nothing reads it afterwards
+      if (IS_SYMOP(allowed) && IC_RIGHT(ic) && IS_OP_LITERAL(IC_RIGHT(ic)) && operandLitValue(IC_RIGHT(ic)) &&
+          !operand_dying(allowed, i, G, I))
+        allowed_ok = false;
       break;
     case '=':
       if (!POINTER_SET(ic))
