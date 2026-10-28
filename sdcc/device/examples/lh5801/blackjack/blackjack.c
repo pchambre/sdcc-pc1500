@@ -13,10 +13,11 @@
 
    Build (see support/scripts/build-lh5801.sh) and load it at the bottom
    of user RAM, after reserving it with the NEW the build script prints.
-   It needs about 10.3K (9.5K of code), so a PC-1500 with 28K of
-   contiguous RAM from 0000H -- still too big for 2K + 8K:
-     build-lh5801.sh blackjack.c 00C5
-     NEW &xxxx, then load the .bin at 00C5H, then CALL &00C5
+   It needs about 9.7K (its arrays sit in BASIC's fixed-variable RAM, see
+   below), so it fits a 2K + 8K PC-1500 (user RAM 40C5H-67FFH):
+     build-lh5801.sh blackjack.c 40C5
+     NEW &xxxx, then load the .bin at 40C5H, then CALL &40C5
+   or, with 28K of contiguous RAM from 0000H, build and load it at 00C5.
 
    This follows the BASIC program statement by statement -- its labels are
    kept in the comments ("N", "NN", "SX", ...) -- so the game plays the
@@ -46,24 +47,30 @@ typedef long money;               /* half dollars */
 #define DONE 0
 #define BUST 3
 
+/* The arrays live in the system RAM of BASIC's fixed variables (A-Z and
+   A$-Z$, 7650H-76FFH and 78C0H-79CFH), which every PC-1500 has and this
+   program never uses as variables, so they cost nothing in user RAM.
+   BASIC's A-Z hold garbage after the game. Startup does not zero these;
+   each is written before it is read. Element 0 of deck and a is unused. */
 unsigned int wm;                  /* the WAIT in force, in 1/64 s */
-char line[40];
+__at(0x76B0) char line[40];
 unsigned char llen;
-char ibuf[12];
+__at(0x78EE) char ibuf[12];
 
-char deck[209];                   /* B$(1..R) */
-unsigned char a[14];
+__at(0x78FF) char deck[209];      /* B$(1..R) */
+__at(0x78E0) unsigned char a[14];
 const char ranks[] = " A23456789TJQK";
 unsigned char nd, r, b, mc;
 
-char c[3][32];                    /* C$(1), C$(2): the player's hands */
-char e[32];                       /* E$: the dealer's cards shown */
+__at(0x7650) char c[3][32];       /* C$(1), C$(2): the player's hands */
+__at(0x78C0) char e[32];          /* E$: the dealer's cards shown */
 char fh;                          /* F$: the dealer's hole card */
 unsigned char t[3], f[3], k[3];
 unsigned char u, u1, g, j, h, i, kf, l, q;
 unsigned char o, countOn, beepOn, en;
 int xx, xb;
-money w, x, d1, d2, ww, w1, y, v, z, z1, zz, m[3];
+money w, x, d1, d2, ww, w1, y, v, z, z1, zz;
+__at(0x76D8) money m[3];
 unsigned int s[3], n, mbj, lw[2], ll[2];
 unsigned int rs = 0xACE1;
 
