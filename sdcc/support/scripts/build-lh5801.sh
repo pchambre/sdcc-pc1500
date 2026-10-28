@@ -154,22 +154,31 @@ mkdir -p "$LIB_CACHE"
 LIB_SRCS=("$DEVICE_LIB_LH5801"/*.asm)
 for f in "$DEVICE_LIB_LH5801"/*.c; do [ -e "$f" ] && LIB_SRCS+=("$f"); done
 for f in "${RUNTIME_SOURCES[@]}"; do LIB_SRCS+=("$DEVICE_LIB/$f.c"); done
-# A private list, renamed into place: parallel builds (make -j in SDCC's
-# regression suite) share the cache.
-LIB_LIST="$(mktemp "$LIB_CACHE/$LIB_NAME.lib.XXXXXX")"
+# Parallel builds (make -j in SDCC's regression suite) share the cache:
+# modules are rebuilt in a private directory and renamed into place, and
+# each build has its own list -- in WORKDIR, its entries reaching the cache
+# through a symlink, since sdld resolves them relative to the list's
+# directory (and a rename over a shared file isn't atomic on /mnt/c).
+LIB_TMP="$(mktemp -d "$LIB_CACHE/tmp.XXXXXX")"
+trap 'rm -rf "$WORKDIR" "$LIB_TMP"' EXIT
+ln -s "$LIB_CACHE" "$WORKDIR/lib"
+LIB_LIST="$WORKDIR/$LIB_NAME.lib"
 for src in "${LIB_SRCS[@]}"; do
   name="${src##*/}"; name="${name%.*}"
   rel="$LIB_CACHE/$name.rel"
   if [ ! -f "$rel" ] || [ "$src" -nt "$rel" ] || [ "$SDCC_ROOT/src/sdcc" -nt "$rel" ] ||
      [ "$ASLH5801" -nt "$rel" ] || [ "$DEVICE_INCLUDE_LH5801/pc1500.h" -nt "$rel" ]; then
     case "$src" in
-      *.asm) "$ASLH5801" -logs -o "$rel" "$src" >/dev/null ;;
-      *.c) compile_c "$src" "$LIB_CACHE" ;;
+      *.asm) "$ASLH5801" -logs -o "$LIB_TMP/$name.rel" "$src" >/dev/null ;;
+      *.c) compile_c "$src" "$LIB_TMP" ;;
     esac
+    for f in "$LIB_TMP/$name".*; do
+      [ "$f" = "$LIB_TMP/$name.rel" ] || mv -f "$f" "$LIB_CACHE/"
+    done
+    mv -f "$LIB_TMP/$name.rel" "$rel"
   fi
-  echo "$name" >> "$LIB_LIST"
+  echo "lib/$name" >> "$LIB_LIST"
 done
-mv "$LIB_LIST" "$LIB_CACHE/$LIB_NAME.lib"
 
 # --- the program's own sources ----------------------------------------
 # The module defining main() goes first: its GSINIT holds the startup
@@ -221,7 +230,7 @@ write_lnk() {  # write_lnk <name> <area=hex_base>...
       echo "-k $(dirname "$l")"
       echo "-l $(basename "$l" .lib)"
     done
-    echo "-k $LIB_CACHE"
+    echo "-k $WORKDIR"
     echo "-l $LIB_NAME"
     for f in "${REL_ARGS[@]}"; do echo "$f"; done
     echo

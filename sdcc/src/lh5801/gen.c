@@ -1467,6 +1467,207 @@ genAssign (const iCode *ic)
 /* constant-folds down to). dirAddr() assumes a real AOP_DIR symbol and      */
 /* asserts otherwise, so that case needs its own literal-immediate X load.   */
 /*-----------------------------------------------------------------*/
+/* Bitfields. SDCCsymt.c's compStructSize() puts a field of up to 8 bits
+   in one byte, from bit SPEC_BSTR up, and a wider one byte-aligned with
+   its low bits at the lowest address -- little-endian, unlike the rest of
+   this port (hc08's convention, also big-endian). A bfloc reaches byte k
+   of a field: at a constant address directly, else through the pointer
+   register q, moved up with INC (`at` counts them). */
+typedef struct
+{
+  const char *dir;              /* the constant address, or NULL */
+  unsigned long offset;
+  char q;
+  int at;
+} bfloc;
+
+/* The operand for byte k of the field, "(addr + n)" or "(q)". */
+static const char *
+bfAt (bfloc *bf, int k)
+{
+  static char buf[160];
+
+  if (bf->dir)
+    snprintf (buf, sizeof (buf), "(%s + %lu)", bf->dir, bf->offset + (unsigned long) k);
+  else
+    {
+      for (; bf->at < k; bf->at++)
+        emit ("inc", "%c", bf->q);
+      snprintf (buf, sizeof (buf), "(%c)", bf->q);
+    }
+  return buf;
+}
+
+/* Sets bf up for the field at pointer `ptr` + `offset`: the pointer's own
+   register when it's in one, there's no offset and `other` (the value
+   read or stored) isn't in it -- returns true then, the caller DECs it
+   back if the pointer lives on -- else X, as genPointerSet() does. */
+static bool
+bfSetup (bfloc *bf, const asmop *ptr, unsigned long offset, const asmop *other)
+{
+  char pair = regPair (ptr);
+
+  memset (bf, 0, sizeof (*bf));
+  if (ptr->type == AOP_IMMD)
+    {
+      bf->dir = ptr->u.dir;
+      bf->offset = offset;
+      return false;
+    }
+  if (pair && !offset && !aopUsesPair (other, pair))
+    {
+      bf->q = pair;
+      return true;
+    }
+  loadPtrX (ptr, offset);
+  bf->q = 'x';
+  return false;
+}
+
+static void
+bfDone (const iCode *ic, const bfloc *bf, bool own, const asmop *ptr)
+{
+  int i;
+
+  if (own && aopSurvives (ic, ptr))
+    for (i = 0; i < bf->at; i++)
+      emit ("dec", "%c", bf->q);
+}
+
+/* A <<= n or >>= n (0 in), AEX (a nibble swap) for 4 of them; returns
+   whether AEX left junk bits behind, which the caller masks off. */
+static bool
+bfShiftA (int n, bool left)
+{
+  bool junk = false;
+
+  if (n >= 4)
+    {
+      emit ("aex", "");
+      n -= 4;
+      junk = true;
+    }
+  for (; n; n--)
+    emit (left ? "shl" : "shr", "");
+  return junk;
+}
+
+/* result = the bitfield at IC_LEFT + offset: each byte into A, shifted
+   down, masked to the field and sign-extended -- (v ^ m) - m, m the
+   field's sign bit -- then the upper result bytes filled. */
+static void
+genUnpackBits (const iCode *ic, unsigned long offset)
+{
+  operand *result = IC_RESULT (ic);
+  operand *left = IC_LEFT (ic);
+  sym_link *etype = getSpec (operandType (result));
+  int blen = SPEC_BLEN (etype);
+  int bstr = SPEC_BSTR (etype);
+  bool sign = !SPEC_USIGN (etype) && !IS_BOOLEAN (etype);
+  int rsize = result->aop->size;
+  int k, i;
+  bfloc bf;
+  bool own = bfSetup (&bf, left->aop, offset, result->aop);
+
+  for (k = 0; blen > 0 && k < rsize; blen -= 8, k++)
+    {
+      int len = blen < 8 ? blen : 8;
+      bool junk;
+
+      emit ("lda", "%s", bfAt (&bf, k));
+      junk = bfShiftA (k ? 0 : bstr, false);
+      if (len < 8 && (junk || bstr + len < 8))
+        emit ("ani", "a, #0x%02x", (1u << len) - 1);
+      if (len < 8 && sign)
+        {
+          emit ("eai", "a, #0x%02x", 1u << (len - 1));
+          emit ("sec", "");
+          emit ("sbi", "a, #0x%02x", 1u << (len - 1));
+        }
+      storeA (result->aop, rsize - 1 - k);
+    }
+
+  if (k < rsize)
+    {
+      if (sign)
+        {
+          symbol *positive = newiTempLabel (NULL);
+
+          emit ("ani", "a, #0x80");
+          emit ("bzs", "!tlabel", labelKey2num (positive->key));
+          emit ("ldi", "a, 0xff");
+          emitLbl (positive);
+        }
+      else
+        emit ("ldi", "a, 0x00");
+      for (i = 0; i < rsize - k; i++)
+        storeA (result->aop, i);
+    }
+
+  bfDone (ic, &bf, own, left->aop);
+}
+
+/* The bitfield at IC_RESULT = IC_RIGHT: whole bytes stored, a partial
+   one merged -- the field's bits cleared in memory (ANI), the value
+   shifted up and masked in A, ORA'd with the memory and stored. A
+   constant needs only the ANI and an ORI. */
+static void
+genPackBits (const iCode *ic)
+{
+  operand *result = IC_RESULT (ic);
+  operand *right = IC_RIGHT (ic);
+  sym_link *etype = getSpec (operandType (result)->next);
+  int blen = SPEC_BLEN (etype);
+  int bstr = SPEC_BSTR (etype);
+  const asmop *v = right->aop;
+  int vsize = v->size;
+  int k;
+  bfloc bf;
+  bool own = bfSetup (&bf, result->aop, 0, v);
+
+  for (k = 0; blen > 0; blen -= 8, k++)
+    {
+      int len = blen < 8 ? blen : 8;
+      int shift = k ? 0 : bstr;
+      unsigned char m = (unsigned char) (((1u << len) - 1) << shift);
+      int vi = vsize - 1 - k;   /* the value's byte k up from the LSB */
+
+      if (v->type == AOP_LIT)
+        {
+          unsigned char c = (unsigned char) (((ulFromVal (v->u.lit) >> (8 * k)) << shift) & m);
+
+          if (m == 0xFF)
+            {
+              emit ("ldi", "a, 0x%02x", c);
+              emit ("sta", "%s", bfAt (&bf, k));
+              continue;
+            }
+          if (c != m)
+            emit ("ani", "%s, 0x%02x", bfAt (&bf, k), (unsigned char) ~m);
+          if (c)
+            emit ("ori", "%s, 0x%02x", bfAt (&bf, k), c);
+          continue;
+        }
+
+      if (vi < 0)
+        emit ("ldi", "a, 0x00");
+      else
+        loadA (v, vi, vsize);
+      if (m == 0xFF)
+        {
+          emit ("sta", "%s", bfAt (&bf, k));
+          continue;
+        }
+      bfShiftA (shift, true);
+      emit ("ani", "a, #0x%02x", m);
+      emit ("ani", "%s, 0x%02x", bfAt (&bf, k), (unsigned char) ~m);
+      emit ("ora", "%s", bfAt (&bf, k));
+      emit ("sta", "%s", bfAt (&bf, k));
+    }
+
+  bfDone (ic, &bf, own, result->aop);
+}
+
 static void
 genPointerSet (const iCode *ic)
 {
@@ -1479,6 +1680,14 @@ genPointerSet (const iCode *ic)
   aopOp (result);
 
   wassertl (result->aop->size == 2, "lh5801: pointer dereference requires a 2-byte pointer");
+
+  if (IS_BITVAR (getSpec (operandType (result)->next)))
+    {
+      genPackBits (ic);
+      freeAsmop (right);
+      freeAsmop (result);
+      return;
+    }
 
   size = right->aop->size;
 
@@ -1724,6 +1933,9 @@ lh5801_memUpdate (const iCode *ic)
 
   if (ic->op != GET_VALUE_AT_ADDRESS || !IS_SYMOP (IC_LEFT (ic)) ||
       (IC_RIGHT (ic) && !IS_OP_LITERAL (IC_RIGHT (ic))))
+    return NULL;
+  /* a bitfield is a read-modify-write of its own (genPackBits()) */
+  if (IS_BITVAR (getSpec (operandType (IC_RESULT (ic)))))
     return NULL;
   /* a pointer store has no offset, so a load through one mustn't either */
   viaPtr = !isRemat (IC_LEFT (ic));
@@ -2989,6 +3201,14 @@ genGetValueAtAddress (const iCode *ic)
       offset = ulFromVal (OP_VALUE (right));
       wassertl (offset <= 0xFF,
         "lh5801: phase-1 backend only supports an 8-bit pointer-dereference offset");
+    }
+
+  if (IS_BITVAR (getSpec (operandType (result))))
+    {
+      genUnpackBits (ic, offset);
+      freeAsmop (left);
+      freeAsmop (result);
+      return;
     }
 
   size = result->aop->size;
