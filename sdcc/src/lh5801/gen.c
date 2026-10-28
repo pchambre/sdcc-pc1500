@@ -36,6 +36,13 @@
 extern bool regalloc_dry_run;   /* SDCCmain.c; SDCCicode.c reads it too */
 static float dryCost;
 
+/* What a dry run emitted, for drylh5801iCode()'s dropReloads() estimate:
+   its first two instruction lines, whether a label came before them, and
+   its last line ("" after a label). */
+static char dryFirst[256], drySecond[256], dryLast[256];
+static int dryLines;
+static bool dryLabelFirst;
+
 /* The size in bytes of one emitted line, "mnemonic<TAB>operands" --
    by operand form, as sdas/aslh5801/m5801mch.c encodes them. */
 static int
@@ -67,6 +74,8 @@ instSize (const char *line)
     return strstr (ops, "),") ? 5 : 4;  /* ME1 (I/O space), FD-prefixed */
   if (ops[0] == '(' && ops[2] != ')')
     return strstr (ops, "),") ? 4 : 3;  /* (ab) or (ab),i -- not (x)/(y)/(u) */
+  if (ops[0] == '(' && ops[3] == ',')
+    return 2;                         /* ADI/ANI/ORI/BII (x),i */
   if (!strcmp (mn, "ldi") || strchr (ops, '#'))
     return 2;                         /* an immediate byte */
   return 1;                           /* inherent, register, (x)/(y)/(u) */
@@ -83,7 +92,13 @@ emit (const char *inst, const char *fmt, ...)
       const char *line = format_opcode (inst, fmt, ap);
 
       if (inst && *inst)
-        dryCost += instSize (line);
+        {
+          dryCost += instSize (line);
+          if (dryLines < 2)
+            snprintf (dryLines ? drySecond : dryFirst, sizeof (dryFirst), "%s", line);
+          snprintf (dryLast, sizeof (dryLast), "%s", line);
+          dryLines++;
+        }
       dbuf_free (line);
     }
   else
@@ -96,6 +111,12 @@ emitLbl (const symbol *tlbl)
 {
   if (!regalloc_dry_run)
     emitLabel (tlbl);
+  else
+    {
+      if (!dryLines)
+        dryLabelFirst = true;
+      dryLast[0] = 0;
+    }
 }
 
 /* The constant address a rematerializable iTemp (ralloc.c's markRemat())
@@ -184,11 +205,12 @@ aopOp (operand *op)
 
     /* A dry run (the allocator pricing an assignment) meets temps that
        will be in memory but don't have their spill location yet: any
-       direct address costs the same. */
+       direct address costs the same -- the temp's own name, so that
+       drylh5801iCode() can't take two temps for the same place. */
     if (regalloc_dry_run && sym->isitmp && !sym->rname[0])
       {
         aop->type = AOP_DIR;
-        aop->u.dir = (char *) "__lh5801_dry";
+        aop->u.dir = sym->name;
         return;
       }
 
@@ -1392,15 +1414,18 @@ lh5801_bitTest (const iCode *ic)
   return ifxForOp (IC_RESULT (ic), ic);
 }
 
-/* `s[k] op= c` on an element at a constant address -- SDCC's three
-   adjacent iCodes
+/* `s[k] op= c` -- SDCC's three adjacent iCodes
      t1 = @[&s + k]   t2 = t1 op c   @[&s + k] := t2
-   for op + - & | and a constant c, the temps used nowhere else -- is
-   done in place on the element (genMemUpdate()), exactly like `x op= c`
-   on a plain variable. Returns the store iCode if `ic` is the load of
-   such a triple, else NULL. ralloc.c marks the other two iCodes generated
-   and gives the temps no storage, before allocation, so the allocator
-   and the code generator agree. */
+   on an element at a constant address, or
+     t1 = @[p]        t2 = t1 op c   @[p] := t2
+   through a pointer p (`s[i] op= c`, `p->f op= c`) -- either with perhaps
+   a same-size cast of t1 before the op -- for op + - & | and a
+   constant c, the temps used nowhere else -- is done in place on the
+   element (genMemUpdate()), exactly like `x op= c` on a plain variable.
+   Returns the store iCode if `ic` is the load of such a triple, else
+   NULL. ralloc.c marks the other two iCodes generated and gives the temps
+   no storage, before allocation, so the allocator and the code generator
+   agree. */
 iCode *
 lh5801_memUpdate (const iCode *ic)
 {
@@ -1408,27 +1433,47 @@ lh5801_memUpdate (const iCode *ic)
   operand *t1, *t2;
   long o1 = 0, o3 = 0;
   const char *b1, *b3;
+  bool viaPtr;
 
-  if (ic->op != GET_VALUE_AT_ADDRESS || !isRemat (IC_LEFT (ic)) ||
+  if (ic->op != GET_VALUE_AT_ADDRESS || !IS_SYMOP (IC_LEFT (ic)) ||
       (IC_RIGHT (ic) && !IS_OP_LITERAL (IC_RIGHT (ic))))
     return NULL;
-  if (!(opic = ic->next) || !(st = opic->next))
+  /* a pointer store has no offset, so a load through one mustn't either */
+  viaPtr = !isRemat (IC_LEFT (ic));
+  if (viaPtr && IC_RIGHT (ic) && operandLitValue (IC_RIGHT (ic)) != 0)
+    return NULL;
+  t1 = IC_RESULT (ic);
+  if (!IS_ITEMP (t1) || !(opic = ic->next))
+    return NULL;
+  /* a same-size cast between the load and the op (integer promotion's
+     leftover: `t3 = (signed char) t1`) changes no bits */
+  if (opic->op == CAST && IS_SYMOP (IC_RIGHT (opic)) && IC_RIGHT (opic)->key == t1->key &&
+      IS_ITEMP (IC_RESULT (opic)) && bitVectnBitsOn (OP_USES (t1)) == 1 &&
+      getSize (operandType (IC_RESULT (opic))) == getSize (operandType (t1)))
+    {
+      t1 = IC_RESULT (opic);
+      opic = opic->next;
+    }
+  if (!opic || !(st = opic->next))
     return NULL;
   if (opic->op != '+' && opic->op != '-' && opic->op != '&' && opic->op != BITWISEAND &&
       opic->op != '|')
     return NULL;
-  t1 = IC_RESULT (ic);
-  if (!IS_ITEMP (t1) || !IS_OP_LITERAL (IC_RIGHT (opic)) || !IS_SYMOP (IC_LEFT (opic)) ||
+  if (!IS_OP_LITERAL (IC_RIGHT (opic)) || !IS_SYMOP (IC_LEFT (opic)) ||
       IC_LEFT (opic)->key != t1->key)
     return NULL;
   t2 = IC_RESULT (opic);
   if (!IS_ITEMP (t2) || t2->key == t1->key || st->op != '=' || !POINTER_SET (st) ||
-      !isRemat (IC_RESULT (st)) || !IS_SYMOP (IC_RIGHT (st)) || IC_RIGHT (st)->key != t2->key)
+      !IS_SYMOP (IC_RESULT (st)) || isRemat (IC_RESULT (st)) == viaPtr ||
+      !IS_SYMOP (IC_RIGHT (st)) || IC_RIGHT (st)->key != t2->key)
     return NULL;
   if (bitVectnBitsOn (OP_USES (t1)) != 1 || bitVectnBitsOn (OP_USES (t2)) != 1)
     return NULL;
   if (getSize (operandType (t1)) != getSize (operandType (t2)) || getSize (operandType (t1)) > 4)
     return NULL;
+  if (viaPtr)
+    return IC_RESULT (st)->key == IC_LEFT (ic)->key && IC_LEFT (ic)->key != IC_RESULT (ic)->key &&
+           IC_LEFT (ic)->key != t1->key && IC_LEFT (ic)->key != t2->key ? st : NULL;
   b1 = rematBase (OP_SYMBOL (IC_LEFT (ic)), &o1);
   if (IC_RIGHT (ic))
     o1 += (long) operandLitValue (IC_RIGHT (ic));
@@ -2353,16 +2398,24 @@ genShift (const iCode *ic, bool isLeft)
    genAddSubInPlace()'s ADI chain or ANI/ORI on the bytes the mask
    changes -- or, for a constant ADI can't chain, an ordinary add through
    A on the element itself. The temps are never touched. */
+static void genMemUpdatePtr (const iCode *ic);
+
 static void
 genMemUpdate (const iCode *ic)
 {
-  const iCode *opic = ic->next;
+  const iCode *opic = lh5801_memUpdate (ic)->prev;
   operand *lit = IC_RIGHT (opic);
   int size = getSize (operandType (IC_RESULT (ic)));
   long offset = IC_RIGHT (ic) ? (long) operandLitValue (IC_RIGHT (ic)) : 0;
   asmop elem;
   char addr[800 + 48];
   int i;
+
+  if (!isRemat (IC_LEFT (ic)))
+    {
+      genMemUpdatePtr (ic);
+      return;
+    }
 
   aopOp (IC_LEFT (ic));
   aopOp (lit);
@@ -2405,6 +2458,109 @@ genMemUpdate (const iCode *ic)
 
   freeAsmop (lit);
   freeAsmop (IC_LEFT (ic));
+}
+
+/* The same update through a pointer: ADI/ANI/ORI (q),i on the element
+   bytes, q a pointer register at the element -- the pointer's own pair
+   when nothing reads the pointer after the store or only one byte is
+   changed (q doesn't move), else X: loaded with the pointer (X holds
+   nothing else -- ralloc2.cc's x_sane()), or, when the pointer is X and
+   still needed, X saved around the update. An add moves q to the low
+   byte and carries up through DEC q (which, like INC, keeps the flags),
+   or, for a constant ADI can't chain, adds through A. */
+static void
+genMemUpdatePtr (const iCode *ic)
+{
+  const iCode *st = lh5801_memUpdate (ic);
+  const iCode *opic = st->prev;
+  operand *ptr = IC_LEFT (ic);
+  operand *lit = IC_RIGHT (opic);
+  int size = getSize (operandType (IC_RESULT (ic)));
+  bool pushed = false;
+  char q;
+  int i;
+
+  aopOp (ptr);
+  aopOp (lit);
+
+  q = regPair (ptr->aop);
+  if (!q || (size > 1 && aopSurvives (st, ptr->aop)))
+    {
+      if (q == 'x')
+        {
+          emit ("psh", "x");
+          pushed = true;
+        }
+      else
+        loadPtrX (ptr->aop, 0);
+      q = 'x';
+    }
+
+  if (opic->op == '+' || opic->op == '-')
+    {
+      unsigned long mask = size == 4 ? 0xFFFFFFFFul : (1ul << (8 * size)) - 1;
+      unsigned long k = ulFromVal (lit->aop->u.lit);
+      unsigned long upper;
+
+      if (opic->op == '-')
+        k = 0 - k;
+      k &= mask;
+      upper = k >> 8;
+      for (i = 0; k && i < size - 1; i++)
+        emit ("inc", "%c", q);
+      if (k && (size == 1 || upper == 0 || upper == mask >> 8))
+        {
+          /* genAddSubInPlace()'s carry chain, through q */
+          symbol *done = newiTempLabel (NULL);
+
+          emit ("adi", "(%c), 0x%02x", q, (unsigned) (k & 0xFF));
+          for (i = size - 2; i >= 0; i--)
+            {
+              emit (upper ? "bcs" : "bcr", "!tlabel", labelKey2num (done->key));
+              emit ("dec", "%c", q);
+              emit ("adi", "(%c), 0x%02x", q, upper ? 0xFF : 0x01);
+            }
+          if (size > 1)
+            emitLbl (done);
+        }
+      else if (k)
+        {
+          emit ("rec", "");
+          for (i = size - 1; i >= 0; i--)
+            {
+              emit ("lda", "(%c)", q);
+              emit ("adi", "a, #0x%02x", (unsigned) ((k >> (8 * (size - 1 - i))) & 0xFF));
+              emit ("sta", "(%c)", q);
+              if (i)
+                emit ("dec", "%c", q);
+            }
+        }
+    }
+  else
+    {
+      bool isAnd = opic->op != '|';
+      int moves = 0;
+
+      for (i = 0; i < size; i++)
+        {
+          unsigned char m = litByte (lit->aop, i, size);
+
+          if (m == (isAnd ? 0xFF : 0x00))
+            {
+              moves++;
+              continue;
+            }
+          for (; moves; moves--)
+            emit ("inc", "%c", q);
+          emit (isAnd ? "ani" : "ori", "(%c), 0x%02x", q, m);
+          moves = 1;
+        }
+    }
+
+  if (pushed)
+    emit ("pop", "x");
+  freeAsmop (lit);
+  freeAsmop (ptr);
 }
 
 static void
@@ -2581,6 +2737,23 @@ genNot (const iCode *ic)
 /* not have set Z from it (a call, LDA XH, ...). Labels, comments and      */
 /* inline asm are left alone, and so are register-indirect operands.       */
 /*-----------------------------------------------------------------*/
+
+/* Is `ld`, the instruction line right after the line `st` (and before
+   `after`, or NULL), a reload dropReloads() removes? drylh5801iCode()
+   asks too. */
+static bool
+isDroppedReload (const char *st, const char *ld, const char *after)
+{
+  /* a memory location, or a register half (STA XL / LDA XL ...) */
+  if (strncmp (st, "sta\t", 4) || strncmp (ld, "lda\t", 4) || strcmp (st + 3, ld + 3) ||
+      !strcmp (st + 4, "(x)") || !strcmp (st + 4, "(y)") || !strcmp (st + 4, "(u)"))
+    return false;
+  if (st[4] != '(' && !(strchr ("xyu", st[4]) && strchr ("lh", st[5]) && !st[6]))
+    return false;
+  return !(after && after[0] == 'b' && after[1] && strchr ("zchv", after[1]) &&
+           (after[2] == 's' || after[2] == 'r'));
+}
+
 static void
 dropReloads (lineNode *head)
 {
@@ -2589,22 +2762,11 @@ dropReloads (lineNode *head)
   for (ln = head; ln && ln->next; ln = ln->next)
     {
       lineNode *nx = ln->next;
-      const char *br;
 
       if (!ln->line || !nx->line || ln->isInline || nx->isInline || ln->isLabel ||
           nx->isLabel || ln->isComment || nx->isComment)
         continue;
-      /* a memory location, or a register half (STA XL / LDA XL ...) */
-      if (strncmp (ln->line, "sta\t", 4) || strncmp (nx->line, "lda\t", 4) ||
-          strcmp (ln->line + 3, nx->line + 3) ||
-          !strcmp (ln->line + 4, "(x)") || !strcmp (ln->line + 4, "(y)") ||
-          !strcmp (ln->line + 4, "(u)"))
-        continue;
-      if (ln->line[4] != '(' &&
-          !(strchr ("xyu", ln->line[4]) && strchr ("lh", ln->line[5]) && !ln->line[6]))
-        continue;
-      br = nx->next ? nx->next->line : NULL;
-      if (br && br[0] == 'b' && br[1] && strchr ("zchv", br[1]) && (br[2] == 's' || br[2] == 'r'))
+      if (!isDroppedReload (ln->line, nx->line, nx->next ? nx->next->line : NULL))
         continue;
 
       ln->next = nx->next;
@@ -2616,6 +2778,116 @@ dropReloads (lineNode *head)
       if (nx->aln)
         Safe_free (nx->aln);
       Safe_free (nx);
+    }
+}
+
+/* Does an instruction's operand text name `reg` ("xl", "x" ...) as a
+   whole token? */
+static bool
+namesReg (const char *ops, const char *reg)
+{
+  size_t n = strlen (reg);
+  const char *p;
+
+  for (p = ops; (p = strstr (p, reg)); p++)
+    if ((p == ops || !(isalnum ((unsigned char) p[-1]) || p[-1] == '_' || p[-1] == '$')) &&
+        !(isalnum ((unsigned char) p[n]) || p[n] == '_' || p[n] == '$'))
+      return true;
+  return false;
+}
+
+/*-----------------------------------------------------------------*/
+/* dropDeadHalfStores - remove "sta xl" (any half of X/Y/U) whose    */
+/* value nothing reads                                               */
+/*                                                                   */
+/* After dropReloads() a temp the allocator put in a register half   */
+/* and the very next iCode used is often stored there and then only  */
+/* used from A. Going forward from the STA, the half is dead if it's  */
+/* written (STA/LDI to it) before anything reads it -- or, for Y and  */
+/* U, if a call or RTN comes first: nothing is passed or returned in  */
+/* them (X may be: a return value, a stack pointer copy). Anything    */
+/* else ends the search with the half taken as live: a label, a       */
+/* branch or jump, inline asm, any use of the whole pair (LIN X, (X), */
+/* PSH X, INC X ...), and any instruction not in the list below,     */
+/* whose register uses might be implicit (LOP's UL, TIN's X/Y ...).   */
+/*-----------------------------------------------------------------*/
+static void
+dropDeadHalfStores (lineNode *head)
+{
+  static const char *const plain[] = {
+    "lda", "sta", "ldi", "adc", "sbc", "adi", "sbi", "and", "ora", "eor", "ani", "ori", "eai",
+    "cpa", "cpi", "bii", "inc", "dec", "shl", "shr", "rol", "ror", "rec", "sec", "lin", "sin",
+    "psh", "pop", NULL
+  };
+  lineNode *ln, *nx;
+
+  for (ln = head; ln; ln = nx)
+    {
+      const char *l = ln->line;
+      char reg[3], pair[2];
+      bool dead = false;
+      lineNode *f;
+
+      nx = ln->next;
+      if (!l || !ln->prev || ln->isInline || ln->isLabel || ln->isComment || strncmp (l, "sta\t", 4) ||
+          !l[4] || !strchr ("xyu", l[4]) || !l[5] || !strchr ("lh", l[5]) || l[6])
+        continue;
+      reg[0] = l[4], reg[1] = l[5], reg[2] = 0;
+      pair[0] = l[4], pair[1] = 0;
+
+      for (f = ln->next; f; f = f->next)
+        {
+          const char *fl = f->line;
+          char mn[8];
+          const char *ops;
+          size_t n;
+          int k;
+
+          if (!fl || f->isComment)
+            continue;
+          while (*fl == ' ' || *fl == '\t')
+            fl++;
+          if (!*fl || *fl == ';')
+            continue;
+          if (f->isInline || f->isLabel || *fl == '.')
+            break;
+          n = strcspn (fl, "\t ");
+          if (n >= sizeof (mn))
+            break;
+          memcpy (mn, fl, n);
+          mn[n] = 0;
+          ops = fl + n;
+          if (!strcmp (mn, "rtn") || !strcmp (mn, "sjp"))
+            {
+              dead = reg[0] != 'x';
+              break;
+            }
+          for (k = 0; plain[k] && strcmp (plain[k], mn); k++)
+            ;
+          if (!plain[k] || namesReg (ops, pair))
+            break;
+          if (namesReg (ops, reg))
+            {
+              /* written (the operand is the destination), not read */
+              while (*ops == '\t' || *ops == ' ')
+                ops++;
+              dead = (!strcmp (mn, "sta") || !strcmp (mn, "ldi")) && !strncmp (ops, reg, 2) &&
+                     (!ops[2] || ops[2] == ',');
+              break;
+            }
+        }
+      if (!dead)
+        continue;
+
+      ln->prev->next = ln->next;
+      if (ln->next)
+        ln->next->prev = ln->prev;
+      if (genLine.lineCurr == ln)
+        genLine.lineCurr = ln->prev;
+      Safe_free (ln->line);
+      if (ln->aln)
+        Safe_free (ln->aln);
+      Safe_free (ln);
     }
 }
 
@@ -2733,13 +3005,37 @@ drylh5801iCode (iCode *ic)
      the numbers would soon pass 65535 -- past what aslh5801's NNNNN$
      local labels can hold. */
   int savedLabelKey = labelKey;
+  iCode *prev = ic->prev;
+  char prevLast[sizeof (dryLast)] = "";
+  float cost;
 
   regalloc_dry_run = true;
+
+  /* dropReloads() will remove an LDA this iCode starts with if the code
+     before it -- the previous iCode's -- ends storing to the same place,
+     so that iCode is dry-run too, for its last line. The operand the two
+     share is where this assignment puts it in both. */
+  if (prev && !prev->generated && prev->op != LABEL && prev->op != FUNCTION &&
+      prev->op != INLINEASM)
+    {
+      dryLines = 0;
+      dryLast[0] = 0;
+      genIC (prev);
+      strcpy (prevLast, dryLast);
+    }
+
   dryCost = 0;
+  dryLines = 0;
+  dryLabelFirst = false;
   genIC (ic);
+  cost = dryCost;
+  if (prevLast[0] && dryLines >= 2 && !dryLabelFirst &&
+      isDroppedReload (prevLast, dryFirst, drySecond))
+    cost -= instSize (dryFirst);
+
   regalloc_dry_run = false;
   labelKey = savedLabelKey;
-  return dryCost;
+  return cost;
 }
 
 /*-----------------------------------------------------------------*/
@@ -2776,6 +3072,7 @@ genLH5801Code (iCode *lic)
      stm8/gen.c's genStm8Code() does the same destroy_line_list() call for
      the same reason. */
   dropReloads (genLine.lineHead);
+  dropDeadHalfStores (genLine.lineHead);
   /* peeph.def's rules -- after dropReloads(), so the branch distances
      they measure are the final ones (or smaller). */
   if (!options.nopeep)

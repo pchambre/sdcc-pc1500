@@ -324,12 +324,12 @@ markRemat (ebbIndex *ebbi)
 }
 
 /*-----------------------------------------------------------------*/
-/* markMemUpdates - `s[k] op= c` on an element at a constant address */
-/* is one in-place update, generated at its load (gen.c's            */
-/* lh5801_memUpdate()/genMemUpdate()): mark the op and the store      */
-/* generated already, and give the two temps no storage (isspilt with */
-/* no spill location -- nothing ever reads them), before the register */
-/* allocator sees any of it.                                          */
+/* markMemUpdates - `s[k] op= c` (at a constant address or through  */
+/* a pointer) is one in-place update, generated at its load (gen.c's */
+/* lh5801_memUpdate()/genMemUpdate()): mark the op, any cast before   */
+/* it and the store generated already, and give the temps no storage  */
+/* (isspilt with no spill location -- nothing ever reads them), before */
+/* the register allocator sees any of it.                              */
 /*-----------------------------------------------------------------*/
 static void
 markMemUpdates (ebbIndex *ebbi)
@@ -346,11 +346,13 @@ markMemUpdates (ebbIndex *ebbi)
 
           if (!st)
             continue;
-          ic->next->generated = 1;
-          st->generated = 1;
           OP_SYMBOL (IC_RESULT (ic))->isspilt = 1;
-          OP_SYMBOL (IC_RESULT (ic->next))->isspilt = 1;
-          ic = st;
+          for (ic = ic->next; ic != st; ic = ic->next)
+            {
+              ic->generated = 1;
+              OP_SYMBOL (IC_RESULT (ic))->isspilt = 1;
+            }
+          st->generated = 1;
         }
     }
 }
