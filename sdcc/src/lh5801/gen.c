@@ -1145,6 +1145,21 @@ genCast (const iCode *ic)
       if (!sameStorage (result->aop, right->aop))
         emitHelper2 ("__lh5801_cpy4", result->aop, right->aop, 0);
     }
+  else if (IS_BOOLEAN (operandType (result)) && !IS_BOOLEAN (operandType (right)))
+    {
+      /* to bool: (right != 0) -- the bytes ORed together, then 0 or 1 */
+      symbol *zero = newiTempLabel (NULL);
+
+      loadA (right->aop, 0, rightSize);
+      for (i = 1; i < rightSize; i++)
+        opA ("ora", "ori", right->aop, i, rightSize);
+      if (rightSize == 1 && aopReg (right->aop, 0) == LH5801_REG_A)
+        emit ("cpi", "a, 0x00");  /* no LDA set Z */
+      emit ("bzs", "!tlabel", labelKey2num (zero->key));
+      emit ("ldi", "a, 0x01");
+      emitLbl (zero);
+      storeA (result->aop, 0);
+    }
   else if (resultSize <= rightSize)
     {
       int srcOffset = rightSize - resultSize;
@@ -1310,10 +1325,21 @@ genCall (const iCode *ic)
   else
     {
       symbol *sym = OP_SYMBOL (IC_LEFT (ic));
+      const char *name = sym->rname[0] ? sym->rname : sym->name;
+      /* setjmp() returns twice, the second time from longjmp() through
+         the return address it saved: the SJP must stay right here, not
+         go into an outlined subroutine (whose own return address a later
+         call overwrites) or become a tail-call JMP. Marked inline, neither
+         outline.c nor the peephole rules touch it. */
+      bool twice = !strcmp (name, "___setjmp");
 
       if (!regalloc_dry_run)
         loadSends (ic);
-      emit ("sjp", "%s", sym->rname[0] ? sym->rname : sym->name);
+      if (twice)
+        genLine.lineElement.isInline++;
+      emit ("sjp", "%s", name);
+      if (twice)
+        genLine.lineElement.isInline--;
     }
 
   if (IC_RESULT (ic))
@@ -1922,6 +1948,8 @@ lh5801_bitTest (const iCode *ic)
    NULL. ralloc.c marks the other two iCodes generated and gives the temps
    no storage, before allocation, so the allocator and the code generator
    agree. */
+static bool bitIntPartial (sym_link *type);
+
 iCode *
 lh5801_memUpdate (const iCode *ic)
 {
@@ -1934,8 +1962,9 @@ lh5801_memUpdate (const iCode *ic)
   if (ic->op != GET_VALUE_AT_ADDRESS || !IS_SYMOP (IC_LEFT (ic)) ||
       (IC_RIGHT (ic) && !IS_OP_LITERAL (IC_RIGHT (ic))))
     return NULL;
-  /* a bitfield is a read-modify-write of its own (genPackBits()) */
-  if (IS_BITVAR (getSpec (operandType (IC_RESULT (ic)))))
+  /* a bitfield is a read-modify-write of its own (genPackBits()), and a
+     partial-byte _BitInt needs its top bits fixed (bitIntTop()) */
+  if (IS_BITVAR (getSpec (operandType (IC_RESULT (ic)))) || bitIntPartial (operandType (IC_RESULT (ic))))
     return NULL;
   /* a pointer store has no offset, so a load through one mustn't either */
   viaPtr = !isRemat (IC_LEFT (ic));
@@ -2850,12 +2879,8 @@ genShift (const iCode *ic, bool isLeft)
   wassertl (left->aop->type == AOP_LIT || left->aop->size == size,
     "lh5801: phase-1 backend requires matching operand/result sizes for shifts");
 
-  /* A literal being shifted is constant-folded by SDCC's own frontend
-     long before this, so it's never actually the value whose sign
-     matters here in practice; treat that (theoretical) case as
-     unsigned rather than dereferencing a literal's operandType. */
-  arithmeticRight = !isLeft && left->aop->type != AOP_LIT &&
-                     !SPEC_USIGN (getSpec (operandType (left)));
+  /* a literal shifted by a runtime count (`-1 >> x`) has its sign too */
+  arithmeticRight = !isLeft && !SPEC_USIGN (getSpec (operandType (left)));
 
   if (right->aop->type == AOP_LIT)
     {
@@ -2929,6 +2954,11 @@ genShift (const iCode *ic, bool isLeft)
       symbol *loopStart = newiTempLabel (NULL);
       symbol *loopEnd = newiTempLabel (NULL);
 
+      /* the count first: the result may share its register (ralloc2.cc's
+         add_operand_conflicts_in_node()) */
+      loadA (right->aop, right->aop->size - 1, right->aop->size);
+      emit ("sta", "(__lh5801_shift_scratch)");
+
       /* left -> result (nothing to do for `x <<= n`) */
       if (!sameStorage (left->aop, result->aop))
         for (i = 0; i < size; i++)
@@ -2936,9 +2966,6 @@ genShift (const iCode *ic, bool isLeft)
             loadA (left->aop, i, size);
             storeA (result->aop, i);
           }
-
-      loadA (right->aop, right->aop->size - 1, right->aop->size);
-      emit ("sta", "(__lh5801_shift_scratch)");
 
       emitLbl (loopStart);
       emit ("lda", "(__lh5801_shift_scratch)");
@@ -3654,6 +3681,59 @@ dropDeadHalfStores (lineNode *head)
     }
 }
 
+/* A _BitInt whose width isn't a whole number of bytes keeps its unused
+   top bits as zeros (unsigned) or copies of its sign bit (signed), as
+   the other ports do: after an op that can carry into them -- + - * <<
+   and unary minus, for unsigned -- or a cast, which also sign-extends. */
+static bool
+bitIntPartial (sym_link *type)
+{
+  return IS_BITINT (type) && (SPEC_BITINTWIDTH (type) % 8);
+}
+
+static void
+bitIntTop (const iCode *ic)
+{
+  operand *result = IC_RESULT (ic);
+  sym_link *type;
+  int w;
+  bool sign;
+  unsigned mask;
+
+  if (!result || !IS_SYMOP (result) || POINTER_SET (ic) || isRemat (result))
+    return;
+  type = operandType (result);
+  if (!bitIntPartial (type))
+    return;
+  w = SPEC_BITINTWIDTH (type) % 8;
+  sign = !SPEC_USIGN (type);
+  if (sign && ic->op != CAST)
+    return;
+  mask = 0xFFu >> (8 - w);
+
+  aopOp (result);
+  if (!sign && result->aop->type == AOP_DIR)
+    {
+      char buf[128];
+
+      dirAddr (buf, sizeof (buf), result->aop, 0);
+      emit ("ani", "(%s), 0x%02x", buf, mask);
+    }
+  else
+    {
+      loadA (result->aop, 0, result->aop->size);
+      emit ("ani", "a, #0x%02x", mask);
+      if (sign)
+        {
+          emit ("eai", "a, #0x%02x", 1u << (w - 1));
+          emit ("sec", "");
+          emit ("sbi", "a, #0x%02x", 1u << (w - 1));
+        }
+      storeA (result->aop, 0);
+    }
+  freeAsmop (result);
+}
+
 /*-----------------------------------------------------------------*/
 /* genIC - generate code for one iCode                              */
 /*-----------------------------------------------------------------*/
@@ -3765,6 +3845,10 @@ genIC (iCode *ic)
       wassertl (0, "lh5801: iCode operator not yet implemented in the phase-1 backend");
       break;
     }
+
+  if (ic->op == '+' || ic->op == '-' || ic->op == '*' || ic->op == LEFT_OP ||
+      ic->op == UNARYMINUS || ic->op == CAST)
+    bitIntTop (ic);
 }
 
 /* The register allocator's price for code generation of one iCode with
@@ -3819,12 +3903,15 @@ void
 genLH5801Code (iCode *lic)
 {
   iCode *ic;
+  bool isFunction = false;
 
   for (ic = lic; ic; ic = ic->next)
     {
       initGenLineElement ();
       genLine.lineElement.ic = ic;
 
+      if (ic->op == FUNCTION)
+        isFunction = true;
       if (ic->generated)
         continue;
       ic->generated = 1;
@@ -3851,7 +3938,11 @@ genLH5801Code (iCode *lic)
      they measure are the final ones (or smaller). */
   if (!options.nopeep)
     peepHole (&genLine.lineHead);
-  recordPreservedRegs (genLine.lineHead);
+  /* Only for a function's own code: a static local's initializer is
+     generated separately with currFunc still set, and its few lines
+     would record its function as preserving everything. */
+  if (isFunction)
+    recordPreservedRegs (genLine.lineHead);
   /* printed at the end of the module, after outlining (outline.c) */
   lh5801_deferCode (genLine.lineHead, codeOutBuf);
   genLine.lineHead = genLine.lineCurr = NULL;
