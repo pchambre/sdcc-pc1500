@@ -14,29 +14,26 @@
 	.area CODE
 
 	.globl _strlen
-	.globl _strlen_PARM_1
 
 ;-----------------------------------------------------------------
 ; size_t strlen(const char *s);  -- returned in X (XH high)
 ;-----------------------------------------------------------------
-_strlen:
-	lda	(_strlen_PARM_1)
-	sta	xh
-	lda	(_strlen_PARM_1 + 1)
-	sta	xl
+_strlen:			; s in X
+	lda	xh
+	sta	yh
+	lda	xl
+	sta	yl
 	ldi	a, 0x00
 strlen_loop:
 	cin
 	bzr	strlen_loop
 	lda	xl
 	rec
-	sbc	(_strlen_PARM_1 + 1)
+	sbc	yl
 	sta	xl
 	lda	xh
-	sbc	(_strlen_PARM_1)
+	sbc	yh
 	sta	xh
 	rtn
 
 	.area DATA
-_strlen_PARM_1:
-	.ds 2

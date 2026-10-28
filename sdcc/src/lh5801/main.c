@@ -146,18 +146,40 @@ lh5801_getRegName (const struct reg_info *reg)
   return "err";
 }
 
+/* Register parameters: the first 1-byte parameter is passed in A, the
+   first 2-byte one in X (high byte in XH) -- argreg 1 and 2, gen.c's
+   genSend()/genReceive(). Every other parameter is stored into the
+   callee's _PARM_n bytes, as before; varargs and reentrant functions
+   (stack parameters) and structs take none in registers. */
+static sym_link *regParmFuncType;
+static unsigned char regParmUsed;
+
 static void
 lh5801_reset_regparms (sym_link *ftype)
 {
-  (void) ftype;
+  regParmFuncType = ftype;
+  regParmUsed = 0;
 }
 
 static int
-lh5801_reg_parm (sym_link *ftype, bool reentrant)
+lh5801_reg_parm (sym_link *l, bool reentrant)
 {
-  (void) ftype;
-  (void) reentrant;
-  return 0; /* Phase 1 never passes parameters in registers. */
+  int size;
+
+  if (reentrant || (regParmFuncType && IFFUNC_HASVARARGS (regParmFuncType)) || IS_STRUCT (l))
+    return 0;
+  size = getSize (l);
+  if (size == 1 && !(regParmUsed & 1))
+    {
+      regParmUsed |= 1;
+      return 1;
+    }
+  if (size == 2 && !(regParmUsed & 2))
+    {
+      regParmUsed |= 2;
+      return 2;
+    }
+  return 0;
 }
 
 static bool

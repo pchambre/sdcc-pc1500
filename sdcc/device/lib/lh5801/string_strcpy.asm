@@ -13,33 +13,28 @@
 	.area CODE
 
 	.globl _strcpy
-	.globl _strcpy_PARM_1
 	.globl _strcpy_PARM_2
 
 ;-----------------------------------------------------------------
 ; char *strcpy(char *dest, const char *src);  -- returns dest
 ;-----------------------------------------------------------------
-_strcpy:
+_strcpy:			; dest in X
+	psh	x		; dest, to return
+	lda	xh
+	sta	yh
+	lda	xl
+	sta	yl
 	lda	(_strcpy_PARM_2)
 	sta	xh
 	lda	(_strcpy_PARM_2 + 1)
 	sta	xl
-	lda	(_strcpy_PARM_1)
-	sta	yh
-	lda	(_strcpy_PARM_1 + 1)
-	sta	yl
 strcpy_loop:
 	lin	x
 	sin	y
 	bzr	strcpy_loop
-	lda	(_strcpy_PARM_1)
-	sta	xh
-	lda	(_strcpy_PARM_1 + 1)
-	sta	xl
+	pop	x
 	rtn
 
 	.area DATA
-_strcpy_PARM_1:
-	.ds 2
 _strcpy_PARM_2:
 	.ds 2

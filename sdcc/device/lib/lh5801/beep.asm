@@ -26,8 +26,6 @@
 
 	.globl _beep
 	.globl _beepTone
-	.globl _beepTone_PARM_1
-	.globl _beepTone_PARM_2
 
 ;-----------------------------------------------------------------
 ; void beep(void);  -- BASIC's BEEP 1
@@ -43,25 +41,16 @@ _beep:
 ; many periods to play (0 plays nothing). X is periods + 0FFH, since the
 ; ROM loop stops when XH reaches 0.
 ;-----------------------------------------------------------------
-_beepTone:
-	lda	(_beepTone_PARM_2)
-	ora	(_beepTone_PARM_2 + 1)
-	bzs	beepTone_done
-	lda	(_beepTone_PARM_1)
+_beepTone:			; halfPeriod in A, periods in X
 	sta	ul
-	rec
-	lda	(_beepTone_PARM_2 + 1)
-	adi	a, #0xFF
-	sta	xl
-	lda	(_beepTone_PARM_2)
-	adi	a, #0x00
-	sta	xh
+	lda	xl
+	bzr	beepTone_go
+	lda	xh
+	bzs	beepTone_done
+beepTone_go:
+	dec	x		; periods - 1 (DEC X: 16 bits)
 	sjp	0xE66F
 beepTone_done:
 	rtn
 
 	.area DATA
-_beepTone_PARM_1:
-	.ds 1
-_beepTone_PARM_2:
-	.ds 2

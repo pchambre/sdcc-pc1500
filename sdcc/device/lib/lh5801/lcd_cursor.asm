@@ -19,19 +19,17 @@
 	.area CODE
 
 	.globl _lcdSetCursor
-	.globl _lcdSetCursor_PARM_1
 	.globl _lcdInvert
 
 ;-----------------------------------------------------------------
 ; void lcdSetCursor(unsigned char cell);  -- cell 0-25
 ;-----------------------------------------------------------------
-_lcdSetCursor:
-	lda	(_lcdSetCursor_PARM_1)
+_lcdSetCursor:			; cell in A
 	shl
-	sta	(_lcdSetCursor_PARM_1)	; cell * 2
+	sta	yl			; cell * 2
 	shl				; cell * 4
 	rec
-	adc	(_lcdSetCursor_PARM_1)	; cell * 6
+	adc	yl			; cell * 6
 	sta	(0x7875)
 	rtn
 
@@ -58,5 +56,3 @@ lcdInvert_done:
 	rtn
 
 	.area DATA
-_lcdSetCursor_PARM_1:
-	.ds 1

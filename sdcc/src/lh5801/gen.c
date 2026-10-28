@@ -500,6 +500,21 @@ loadPtrX (const asmop *aop, unsigned long offset)
       emit ("ldi", "xl, #0x%02x", (unsigned) (addr & 0xFF));
       return;
     }
+  if (aop->type == AOP_IMMD || aop->type == AOP_FUNC)
+    {
+      /* a link-time constant address: LDI XH/XL too */
+      if (offset)
+        {
+          emit ("ldi", "xh, >(%s + %lu)", aop->u.dir, offset);
+          emit ("ldi", "xl, <(%s + %lu)", aop->u.dir, offset);
+        }
+      else
+        {
+          emit ("ldi", "xh, >%s", aop->u.dir);
+          emit ("ldi", "xl, <%s", aop->u.dir);
+        }
+      return;
+    }
 
   loadA (aop, 1, aop->size);  /* low byte */
   if (offset)
@@ -1121,6 +1136,105 @@ genCast (const iCode *ic)
   freeAsmop (result);
 }
 
+/* Register parameters (main.c's lh5801_reg_parm()): argreg 1 is A, 2 is
+   X. A SEND only names the value: it's loaded right before the SJP, after
+   the other parameters' stores (which go through A) -- SDCClrange.c keeps
+   a SEND's operand alive until the call for that. X first, A last -- but
+   an A argument in an X half is loaded first (and kept on the stack while
+   X is loaded, if that goes through A). */
+static void
+loadSends (const iCode *call)
+{
+  const iCode *sa = NULL, *sx = NULL, *p;
+  bool aInX;
+
+  for (p = call->prev; p && p->op != CALL && p->op != PCALL && p->op != FUNCTION && p->op != LABEL; p = p->prev)
+    if (p->op == SEND)
+      {
+        if (p->argreg == 1)
+          sa = p;
+        else
+          sx = p;
+      }
+
+  if (sa)
+    aopOp (IC_LEFT (sa));
+  if (sx)
+    aopOp (IC_LEFT (sx));
+  aInX = sa && sx && aopUsesPair (IC_LEFT (sa)->aop, 'x');
+  if (aInX)
+    {
+      /* a constant address goes into X by LDI, not through A */
+      int t = IC_LEFT (sx)->aop->type;
+      bool viaA = t != AOP_LIT && t != AOP_IMMD && t != AOP_FUNC;
+
+      loadA (IC_LEFT (sa)->aop, 0, 1);
+      if (viaA)
+        emit ("psh", "a");
+      loadPtrX (IC_LEFT (sx)->aop, 0);
+      if (viaA)
+        emit ("pop", "a");
+    }
+  else
+    {
+      if (sx && regPair (IC_LEFT (sx)->aop) != 'x')
+        loadPtrX (IC_LEFT (sx)->aop, 0);
+      if (sa)
+        loadA (IC_LEFT (sa)->aop, 0, 1);
+    }
+  if (sa)
+    freeAsmop (IC_LEFT (sa));
+  if (sx)
+    freeAsmop (IC_LEFT (sx));
+}
+
+/* A SEND's code is its load at the call (loadSends()); the allocator's dry
+   run prices that load here, where the operand's register is known. */
+static void
+genSend (const iCode *ic)
+{
+  if (!regalloc_dry_run)
+    return;
+  aopOp (IC_LEFT (ic));
+  if (ic->argreg == 1)
+    loadA (IC_LEFT (ic)->aop, 0, 1);
+  else if (regPair (IC_LEFT (ic)->aop) != 'x')
+    loadPtrX (IC_LEFT (ic)->aop, 0);
+  freeAsmop (IC_LEFT (ic));
+}
+
+/* A register parameter arriving: from A, or X (high byte XH). The A one
+   goes first -- taking X apart goes through A. */
+static void
+genReceive (iCode *ic)
+{
+  operand *result = IC_RESULT (ic);
+
+  if (ic->argreg == 2 && !regalloc_dry_run)
+    {
+      iCode *n;
+
+      for (n = ic->next; n && n->op == RECEIVE; n = n->next)
+        if (n->argreg == 1 && !n->generated)
+          {
+            n->generated = 1;
+            genReceive (n);
+          }
+    }
+
+  aopOp (result);
+  if (ic->argreg == 1)
+    storeA (result->aop, 0);
+  else if (regPair (result->aop) != 'x')
+    {
+      emit ("lda", "xh");
+      storeA (result->aop, 0);
+      emit ("lda", "xl");
+      storeA (result->aop, 1);
+    }
+  freeAsmop (result);
+}
+
 static void
 genCall (const iCode *ic)
 {
@@ -1163,12 +1277,16 @@ genCall (const iCode *ic)
 
       freeAsmop (left);
 
+      if (!regalloc_dry_run)
+        loadSends (ic);
       emit ("sjp", "__lh5801_pcall_trampoline");
     }
   else
     {
       symbol *sym = OP_SYMBOL (IC_LEFT (ic));
 
+      if (!regalloc_dry_run)
+        loadSends (ic);
       emit ("sjp", "%s", sym->rname[0] ? sym->rname : sym->name);
     }
 
@@ -2959,7 +3077,11 @@ dropReloads (lineNode *head)
       if (!ln->line || !nx->line || ln->isInline || nx->isInline || ln->isLabel ||
           nx->isLabel || ln->isComment || nx->isComment)
         continue;
-      if (!isDroppedReload (ln->line, nx->line, nx->next ? nx->next->line : NULL))
+      /* LDA XL / STA XL: the half already holds A */
+      if (!(!strncmp (ln->line, "lda\t", 4) && !strncmp (nx->line, "sta\t", 4) &&
+            !strcmp (ln->line + 4, nx->line + 4) && strchr ("xyu", ln->line[4]) && ln->line[4] &&
+            ln->line[5] && strchr ("lh", ln->line[5]) && !ln->line[6]) &&
+          !isDroppedReload (ln->line, nx->line, nx->next ? nx->next->line : NULL))
         continue;
 
       ln->next = nx->next;
@@ -3122,6 +3244,12 @@ genIC (iCode *ic)
       break;
     case IPUSH:
       genIpush (ic);
+      break;
+    case SEND:
+      genSend (ic);
+      break;
+    case RECEIVE:
+      genReceive (ic);
       break;
     case CALL:
     case PCALL:

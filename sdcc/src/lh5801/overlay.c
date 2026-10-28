@@ -35,6 +35,8 @@
     - parameters stay where they are: a caller fills a callee's _PARM_n
       bytes while it may still call something else first (`g (x, h (y))`),
       and h's frame starts where g's would. Statics stay too, of course.
+      (Register parameters arrive in A or X; where the callee keeps them
+      is an ordinary local.)
 
   lh5801_overlayFunction() runs at the end of each function's register
   allocation (ralloc.c): it takes the function's overlayable locals out of
@@ -140,7 +142,8 @@ lh5801_overlayFunction (ebbIndex *ebbi)
             }
           if (!SKIP_IC2 (ic))
             {
-              if (ic->op != CALL)
+              /* a CALL's and a RECEIVE's (its own function) don't count */
+              if (ic->op != CALL && ic->op != RECEIVE)
                 markFuncOperand (IC_LEFT (ic));
               markFuncOperand (IC_RIGHT (ic));
               markFuncOperand (IC_RESULT (ic));

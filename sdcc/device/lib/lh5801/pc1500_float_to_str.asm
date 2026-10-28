@@ -26,7 +26,6 @@
 	.area CODE
 
 	.globl _pc1500FloatToStr
-	.globl _pc1500FloatToStr_PARM_1
 	.globl _pc1500FloatToStr_PARM_2
 	.globl __pc1500_fp_copyin
 
@@ -39,10 +38,6 @@ PC1500_STR_BUF_LEN	= 20
 ; void pc1500FloatToStr(pc1500_float_t v, char *out);
 ;-----------------------------------------------------------------
 _pc1500FloatToStr:
-	lda	(_pc1500FloatToStr_PARM_1)
-	sta	xh
-	lda	(_pc1500FloatToStr_PARM_1 + 1)
-	sta	xl
 	sjp	__pc1500_fp_copyin
 
 	ldi	a, 0x00
@@ -80,7 +75,5 @@ _pc1500FloatToStr:
 	rtn
 
 	.area DATA
-_pc1500FloatToStr_PARM_1:
-	.ds 2
 _pc1500FloatToStr_PARM_2:
 	.ds 2
