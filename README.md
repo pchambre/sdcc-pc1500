@@ -27,7 +27,10 @@ different here.
   turns overlaying off. The first 1-byte parameter is passed in A and the
   first 2-byte one in X (`main.c`'s `lh5801_reg_parm()`); the others go to
   the callee's `_PARM_n` bytes, and reentrant and varargs functions take
-  theirs on the stack. 32-bit copies, constant stores, add, subtract,
+  theirs on the stack. A call clobbers every register, except the Y and U
+  halves a function earlier in the same module is found to leave alone
+  (`gen.c`'s `recordPreservedRegs()`): values can stay there across calls
+  to it. 32-bit copies, constant stores, add, subtract,
   negate, shifts and ordered compares of values in memory call small
   runtime helpers (`device/lib/lh5801/_lh5801_*4.asm`, operand addresses
   inline after the call) instead of expanding byte by byte;

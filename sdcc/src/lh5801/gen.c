@@ -3112,6 +3112,116 @@ namesReg (const char *ops, const char *reg)
 }
 
 /*-----------------------------------------------------------------*/
+/* Which of the Y and U halves each function of this module leaves    */
+/* alone, recorded once its code is final (recordPreservedRegs()):     */
+/* its instructions never name them, and every function it calls is   */
+/* earlier in the module and leaves them alone too. Stored in the      */
+/* function type's preserved_regs (SDCC's __preserves_regs), which     */
+/* ralloc2.cc reads at a later caller's CALL to let a value in Y or U  */
+/* live across it -- calls otherwise clobber every register.           */
+/*-----------------------------------------------------------------*/
+typedef struct preservedFunc
+{
+  char *rname;
+  bool regs[LH5801_NUM_REGS];
+} preservedFunc;
+
+static preservedFunc *preservedFuncs;
+static int nPreservedFuncs;
+
+/* The registers a call to `target` (an SJP operand) leaves alone, or
+   NULL if none are known: a 32-bit helper keeps nothing (helperOk() only
+   calls one with nothing to keep), a function recorded here what it says. */
+static const bool *
+preservedByCall (const char *target)
+{
+  int i;
+
+  for (i = 0; i < nPreservedFuncs; i++)
+    if (!strcmp (preservedFuncs[i].rname, target))
+      return preservedFuncs[i].regs;
+  return NULL;
+}
+
+static void
+recordPreservedRegs (lineNode *head)
+{
+  static const char *const known[] = {
+    "lda", "sta", "ldi", "adc", "sbc", "adi", "sbi", "and", "ora", "eor", "ani", "ori", "eai",
+    "cpa", "cpi", "bii", "inc", "dec", "shl", "shr", "rol", "ror", "rec", "sec", "lin", "sin",
+    "lde", "sde", "psh", "pop", "jmp", "rtn", "cin", "nop", "ldx", "stx", NULL
+  };
+  bool regs[LH5801_NUM_REGS];
+  lineNode *ln;
+  int r, k;
+
+  if (!currFunc || IFFUNC_ISREENT (currFunc->type))
+    return;
+  for (r = 0; r < LH5801_NUM_REGS; r++)
+    regs[r] = r >= LH5801_REG_YL;
+
+  for (ln = head; ln; ln = ln->next)
+    {
+      const char *l = ln->line;
+      char mn[8];
+      const char *ops;
+      size_t n;
+
+      if (!l || ln->isComment || ln->isLabel)
+        continue;
+      while (*l == ' ' || *l == '\t')
+        l++;
+      if (!*l || *l == ';' || *l == '.' || l[strlen (l) - 1] == ':')
+        continue;                       /* .dw/.db: a helper's operands */
+      if (ln->isInline)
+        return;
+      n = strcspn (l, "\t ");
+      if (n >= sizeof (mn))
+        return;
+      memcpy (mn, l, n);
+      mn[n] = 0;
+      ops = l + n;
+      while (*ops == '\t' || *ops == ' ')
+        ops++;
+
+      if (!strcmp (mn, "sjp"))
+        {
+          const bool *p = strncmp (ops, "__lh5801_", 9) ? preservedByCall (ops) : NULL;
+
+          for (r = LH5801_REG_YL; r < LH5801_NUM_REGS; r++)
+            regs[r] = regs[r] && p && p[r];
+          continue;
+        }
+      if (!strcmp (mn, "tin"))          /* (Y) = (X): Y moves */
+        {
+          regs[LH5801_REG_YL] = regs[LH5801_REG_YH] = false;
+          continue;
+        }
+      if (mn[0] == 'b' && strcmp (mn, "bii"))
+        continue;                       /* branches */
+      for (k = 0; known[k] && strcmp (known[k], mn); k++)
+        ;
+      if (!known[k])                    /* VMJ, LOP (UL) ... anything else */
+        return;
+      if (namesReg (ops, "y"))
+        regs[LH5801_REG_YL] = regs[LH5801_REG_YH] = false;
+      if (namesReg (ops, "u"))
+        regs[LH5801_REG_UL] = regs[LH5801_REG_UH] = false;
+      for (r = LH5801_REG_YL; r < LH5801_NUM_REGS; r++)
+        if (namesReg (ops, regName[r]))
+          regs[r] = false;
+    }
+
+  preservedFuncs = Safe_realloc (preservedFuncs, (nPreservedFuncs + 1) * sizeof (*preservedFuncs));
+  preservedFuncs[nPreservedFuncs].rname = Safe_strdup (currFunc->rname);
+  memcpy (preservedFuncs[nPreservedFuncs].regs, regs, sizeof (regs));
+  nPreservedFuncs++;
+  for (r = LH5801_REG_YL; r < LH5801_NUM_REGS; r++)
+    if (regs[r])
+      currFunc->type->funcAttrs.preserved_regs[r] = true;
+}
+
+/*-----------------------------------------------------------------*/
 /* dropDeadHalfStores - remove "sta xl" (any half of X/Y/U) whose    */
 /* value nothing reads                                               */
 /*                                                                   */
@@ -3174,7 +3284,19 @@ dropDeadHalfStores (lineNode *head)
           ops = fl + n;
           if (!strcmp (mn, "rtn") || !strcmp (mn, "sjp"))
             {
+              /* ...unless the function called leaves it alone */
+              const bool *p = NULL;
+
+              if (mn[0] == 's')
+                {
+                  while (*ops == '\t' || *ops == ' ')
+                    ops++;
+                  p = preservedByCall (ops);
+                }
               dead = reg[0] != 'x';
+              for (k = LH5801_REG_YL; dead && p && k < LH5801_NUM_REGS; k++)
+                if (!strcmp (regName[k], reg) && p[k])
+                  dead = false;
               break;
             }
           for (k = 0; plain[k] && strcmp (plain[k], mn); k++)
@@ -3398,6 +3520,7 @@ genLH5801Code (iCode *lic)
      they measure are the final ones (or smaller). */
   if (!options.nopeep)
     peepHole (&genLine.lineHead);
+  recordPreservedRegs (genLine.lineHead);
   printLine (genLine.lineHead, codeOutBuf);
   destroy_line_list ();
 }
