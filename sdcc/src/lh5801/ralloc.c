@@ -384,6 +384,33 @@ lh5801_assignRegisters (ebbIndex *ebbi)
         createStaticSpil (psym);
     }
 
+  /* Its true locals (arrays, volatiles, anything whose address is taken)
+     were put on the stack too, at offsets below the frame nothing here
+     can reach: they get a shadow the same way, and the shadow is all
+     there is. (gen.c's collectFrameSave() saves them for recursion.) */
+  for (k = 0; k < ebbi->count; k++)
+    {
+      iCode *ic;
+
+      for (ic = ebbi->bbOrder[k]->sch; ic; ic = ic->next)
+        {
+          operand *ops[3] = {IC_LEFT (ic), IC_RIGHT (ic), IC_RESULT (ic)};
+          int j;
+
+          if (SKIP_IC2 (ic))
+            continue;
+          for (j = 0; j < 3; j++)
+            {
+              if (!ops[j] || !IS_TRUE_SYMOP (ops[j]))
+                continue;
+              sym = OP_SYMBOL (ops[j]);
+              if (sym->onStack && !sym->_isparm && !sym->isspilt && sym->localof == currFunc &&
+                  strcmp (sym->name, "__va_start"))
+                createStaticSpil (sym);
+            }
+        }
+    }
+
   packRegisters (ebbi);
   markRemat (ebbi);
   markMemUpdates (ebbi);

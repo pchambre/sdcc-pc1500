@@ -99,6 +99,12 @@ void genLH5801OrphanedLabels (eBBlock **ebbs, int count);
    gen.c's normal per-function codegen path. */
 void genLH5801AssemblerStart (FILE *of);
 
+/* A reentrant function's locals that it pushes at entry and pops back
+   before it returns (gen.c's collectFrameSave()), and their total size;
+   overlay.c lays them out as one block, <rname>__saved. */
+extern set *lh5801_frameSave;
+extern int lh5801_frameSaveSize;
+
 /* outline.c: a function's finished lines are kept (lh5801_deferCode())
    until SDCCglue.c's glue() calls lh5801_flushCode(), which outlines code
    repeated across the module into subroutines, then prints everything.
