@@ -332,6 +332,7 @@ lh5801_genInitStartup (FILE *of)
    definitions); this array only affects the literal __reentrant/
    reentrant keyword being recognized when C source uses it directly. */
 static char *lh5801_keywords[] = {
+  "at",                         /* __at(addr): an equate, nothing allocated */
   "reentrant",
   NULL
 };

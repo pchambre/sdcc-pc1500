@@ -39,6 +39,10 @@ different here.
   call" optimization); `--lh5801-no-outline` or `--opt-code-speed` turns
   that off. This needs one LH5801 hook in `SDCCglue.c` (below). See `gen.c`'s, `ralloc2.cc`'s
   and `overlay.c`'s own header comments for the design rationale.
+  `__at(addr)` places a variable at a fixed address; a program that never
+  uses BASIC's fixed variables can keep arrays in their system RAM
+  (7650H-76FFH, 774EH-77FFH, 78C0H-79CFH) at no cost in user RAM, as
+  Blackjack does. Startup does not zero `__at` variables.
 - **`sdcc/sdas/aslh5801/`** — the LH5801 assembler, built on the shared
   `sdas` framework used by SDCC's other targets.
 - **`sdcc/device/lib/lh5801/`** and **`sdcc/device/include/lh5801/`** — a
