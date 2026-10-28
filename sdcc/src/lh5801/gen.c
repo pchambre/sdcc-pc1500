@@ -60,6 +60,14 @@ instSize (const char *line)
   while (*ops == '\t' || *ops == ' ')
     ops++;
 
+  if (!strcmp (mn, ".dw") || !strcmp (mn, ".db"))
+    {
+      int items = 1;
+
+      for (; *ops; ops++)
+        items += *ops == ',';
+      return mn[2] == 'w' ? 2 * items : items;   /* the 32-bit helpers' inline operands */
+    }
   if (!strcmp (mn, "jmp") || !strcmp (mn, "sjp"))
     return 3;
   if (mn[0] == 'b' && strcmp (mn, "bii") || !strcmp (mn, "lop") || !strcmp (mn, "vmj"))
@@ -442,6 +450,40 @@ aopSurvives (const iCode *ic, const asmop *aop)
     if (bitVectBitValue (ic->rSurv, aop->u.regs[i]))
       return true;
   return false;
+}
+
+/* May `ic` call one of the 32-bit helpers (device/lib/lh5801/
+   _lh5801_{cpy4,set4,add4,sub4}.asm)? They clobber X, Y and U, so only
+   when none of them holds a value that lives on past `ic` -- and not
+   with --opt-code-speed, which keeps the faster inline code. */
+static bool
+helperOk (const iCode *ic)
+{
+  int r;
+
+  if (optimize.codeSpeed)
+    return false;
+  if (!ic->rSurv)
+    return true;
+  for (r = LH5801_REG_XL; r <= LH5801_REG_UH; r++)
+    if (bitVectBitValue (ic->rSurv, r))
+      return false;
+  return true;
+}
+
+static bool sameStorage (const asmop *a, const asmop *b);
+
+/* Calls a 32-bit helper with the addresses of byte `offset` of two
+   memory operands inline after the SJP. */
+static void
+emitHelper2 (const char *helper, const asmop *a, const asmop *b, int offset)
+{
+  char ba[128], bb[128];
+
+  dirAddr (ba, sizeof (ba), a, offset);
+  dirAddr (bb, sizeof (bb), b, offset);
+  emit ("sjp", "%s", helper);
+  emit (".dw", "%s, %s", ba, bb);
 }
 
 /* X = the 2-byte pointer `aop` + a constant `offset`: a literal address
@@ -939,11 +981,34 @@ genAddrOf (const iCode *ic)
    through A, loaded only when a byte differs from the one before -- and a
    lone 0 or FFH byte with ANI/ORI (ab),i instead (4 bytes, not 5). */
 static void
-storeLiteral (const asmop *result, const asmop *lit)
+storeLiteral (const iCode *ic, const asmop *result, const asmop *lit)
 {
   int size = result->size;
   int inA = -1;
-  int i;
+  int i, inline4 = 0;
+
+  /* 4 bytes into memory: the set helper's 9 bytes, when the LDI/STAs
+     would be more */
+  if (size == 4 && result->type == AOP_DIR && helperOk (ic))
+    {
+      for (i = 0; i < size; i++)
+        {
+          inline4 += 3 + (litByte (lit, i, size) != inA ? 2 : 0);
+          inA = litByte (lit, i, size);
+        }
+      if (inline4 > 9)
+        {
+          char buf[128];
+
+          dirAddr (buf, sizeof (buf), result, 0);
+          emit ("sjp", "__lh5801_set4");
+          emit (".dw", "%s", buf);
+          emit (".db", "0x%02x, 0x%02x, 0x%02x, 0x%02x", litByte (lit, 0, size), litByte (lit, 1, size),
+                litByte (lit, 2, size), litByte (lit, 3, size));
+          return;
+        }
+      inA = -1;
+    }
 
   for (i = 0; i < size; i++)
     {
@@ -979,7 +1044,7 @@ storeLiteral (const asmop *result, const asmop *lit)
    Zero-extending everything (as this used to) silently turned
    `long v = -7;`-style widening of a signed variable into 65529. */
 static void
-genWiden (operand *result, operand *right)
+genWiden (const iCode *ic, operand *result, operand *right)
 {
   int resultSize = result->aop->size;
   int rightSize = right->aop->size;
@@ -988,7 +1053,7 @@ genWiden (operand *result, operand *right)
 
   if (right->aop->type == AOP_LIT)
     {
-      storeLiteral (result->aop, right->aop);
+      storeLiteral (ic, result->aop, right->aop);
       return;
     }
 
@@ -1032,7 +1097,13 @@ genCast (const iCode *ic)
   rightSize = right->aop->size;
 
   if (right->aop->type == AOP_LIT)
-    storeLiteral (result->aop, right->aop);
+    storeLiteral (ic, result->aop, right->aop);
+  else if (resultSize == 4 && rightSize == 4 && result->aop->type == AOP_DIR &&
+           right->aop->type == AOP_DIR && helperOk (ic))
+    {
+      if (!sameStorage (result->aop, right->aop))
+        emitHelper2 ("__lh5801_cpy4", result->aop, right->aop, 0);
+    }
   else if (resultSize <= rightSize)
     {
       int srcOffset = rightSize - resultSize;
@@ -1044,7 +1115,7 @@ genCast (const iCode *ic)
         }
     }
   else
-    genWiden (result, right);
+    genWiden (ic, result, right);
 
   freeAsmop (right);
   freeAsmop (result);
@@ -1200,7 +1271,13 @@ genAssign (const iCode *ic)
      per this port's big-endian byte order). Mirrors genCast()'s exact
      algorithm since the needed behavior is identical either way. */
   if (right->aop->type == AOP_LIT)
-    storeLiteral (result->aop, right->aop);
+    storeLiteral (ic, result->aop, right->aop);
+  else if (resultSize == 4 && rightSize == 4 && result->aop->type == AOP_DIR &&
+           right->aop->type == AOP_DIR && helperOk (ic))
+    {
+      if (!sameStorage (result->aop, right->aop))
+        emitHelper2 ("__lh5801_cpy4", result->aop, right->aop, 0);
+    }
   else if (resultSize <= rightSize)
     {
       int srcOffset = rightSize - resultSize;
@@ -1212,7 +1289,7 @@ genAssign (const iCode *ic)
         }
     }
   else
-    genWiden (result, right);
+    genWiden (ic, result, right);
 
   freeAsmop (right);
   freeAsmop (result);
@@ -1334,6 +1411,33 @@ genAddSub (const iCode *ic, bool isSub)
       freeAsmop (right);
       freeAsmop (result);
       return;
+    }
+
+  /* Three 4-byte memory operands: the helper, in place on the result --
+     after copying the left operand there, when the result is a third
+     place. */
+  if (result->aop->size == 4 && result->aop->type == AOP_DIR && left->aop->type == AOP_DIR &&
+      right->aop->type == AOP_DIR && left->aop->size == 4 && right->aop->size == 4 && helperOk (ic))
+    {
+      const asmop *other = NULL;
+
+      if (sameStorage (result->aop, left->aop))
+        other = right->aop;
+      else if (!isSub && sameStorage (result->aop, right->aop))
+        other = left->aop;
+      else if (!sameStorage (result->aop, right->aop))
+        {
+          emitHelper2 ("__lh5801_cpy4", result->aop, left->aop, 0);
+          other = right->aop;
+        }
+      if (other)
+        {
+          emitHelper2 (isSub ? "__lh5801_sub4" : "__lh5801_add4", result->aop, other, 3);
+          freeAsmop (left);
+          freeAsmop (right);
+          freeAsmop (result);
+          return;
+        }
     }
 
   size = result->aop->size;
@@ -1587,22 +1691,16 @@ genAddSubInPlace (const asmop *result, const asmop *left, const asmop *right, bo
 /*-----------------------------------------------------------------*/
 /* genCmp - generate code for '>' '<' LE_OP GE_OP EQ_OP NE_OP       */
 /*                                                                   */
-/* Method: subtract byte-by-byte LSB-first via the same chainable    */
-/* SBC/SBI carry-chain genAddSub() uses (discarding the arithmetic   */
-/* result -- only the flags matter), while separately OR-accumulating */
-/* each byte's subtraction result into a shared scratch byte to also */
-/* get a reliable "were *all* bytes equal" signal (the final Z flag  */
-/* after a carry chain only reflects the *last* byte, not the whole  */
-/* multi-byte result, so it can't answer equality by itself). AND/OR */
-/* only affect Z, not C (confirmed against pc1500emu's opcode         */
-/* implementations), so interleaving the two doesn't corrupt either. */
-/* After the loop: C=1 means left>=right (unsigned, no borrow); the  */
-/* scratch byte is 0 iff left==right (true regardless of signedness  */
-/* -- equality doesn't care about sign interpretation).              */
-/*                                                                   */
-/* For an UNSIGNED comparison that's the whole story: the switch     */
-/* below decides '<'/'>='/'>'/'<=' directly from C, and '=='/'!=' from */
-/* the scratch byte's Z.                                              */
+/* Method: '<' and '>=' subtract byte-by-byte LSB-first via the same */
+/* chainable SBC/SBI carry chain genAddSub() uses, keeping only the  */
+/* carry: C=1 (no borrow) means left>=right. A literal's low zero    */
+/* bytes are skipped (with no borrow in, they leave the carry set).  */
+/* A multi-byte '>' or '<=' becomes one of those two (k+1 against a  */
+/* literal, else the operands swapped) -- the carry chain's final Z  */
+/* only reflects its last byte. '==' and '!=' compare byte by byte,  */
+/* high first, branching out at the first difference with Z clear,   */
+/* so Z at the end means all bytes were equal. A single byte keeps   */
+/* '>' and '<=' as they are: its one SBC/SBI's Z is exact.           */
 /*                                                                    */
 /* A SIGNED comparison: the LH5801 has no signed-overflow flag         */
 /* (confirmed against pc1500emu's Flags struct: only c/v/z/h, and v     */
@@ -1617,15 +1715,13 @@ genAddSubInPlace (const asmop *result, const asmop *left, const asmop *right, bo
 /* Fused with a following IFX (ifx non-NULL -- ifxForOp() found that  */
 /* the 0/1 result is used by nothing but that branch): instead of      */
 /* materializing the result byte for genIfx() to reload, branch        */
-/* straight from the flags/scratch bytes (emitCmpBranch()). The usual   */
+/* straight from the flags (emitCmpBranch()). The usual                 */
 /* "if (a == b)" then costs a compare and a branch, not a compare, a    */
 /* 0/1 store, a reload and a branch -- it was ~30 bytes per test.       */
 /*                                                                    */
 /* EQ_OP/NE_OP always take the unsigned path: equality doesn't depend  */
 /* on how the bits are read, and plain char is signed in SDCC, so every */
-/* `c == 'A'` used to pay for the whole signed sequence above. A single- */
-/* byte unsigned comparison skips the all-bytes-equal scratch byte too:  */
-/* the one SBC/SBI already leaves Z exact.                              */
+/* `c == 'A'` used to pay for the whole signed sequence above.          */
 /*-----------------------------------------------------------------*/
 static void emitLongCondBranch (const char *invMnemonic, const symbol *target);
 
@@ -1689,7 +1785,8 @@ genCmp (const iCode *ic, iCode *ifx)
   operand *result = IC_RESULT (ic);
   operand *left = IC_LEFT (ic);
   operand *right = IC_RIGHT (ic);
-  bool needScratch;
+  int op = ic->op;
+  unsigned char lit[8];
   int size, i;
   bool isSigned;
   /* newiTempLabel()/!tlabel, not a plain fixed-name label: aslh5801's
@@ -1743,55 +1840,118 @@ genCmp (const iCode *ic, iCode *ifx)
       isSigned = false;
     }
 
-  if (ic->op == EQ_OP || ic->op == NE_OP)
+  if (op == EQ_OP || op == NE_OP)
     isSigned = false;
-  needScratch = size > 1;
 
   wassertl ((left->aop->type == AOP_LIT || left->aop->size == size) &&
             (right->aop->type == AOP_LIT || right->aop->size == size),
     "lh5801: phase-1 backend requires matching operand sizes for comparisons");
   wassertl (result->aop->size == 1, "lh5801: comparison result must be 1 byte");
 
-  /* Signed: the most-significant bytes are compared with their sign bits
-     flipped (EAI 80H), which maps signed order onto unsigned order --
-     so every case below is then just the unsigned one. EAI and LDA only
-     touch Z, never the carry the subtraction chain is threading through.
-     The right operand's flipped MSB goes to __lh5801_cmp_signA first,
-     since SBC has no "operand xor 80H" form. */
-  if (isSigned && right->aop->type != AOP_LIT)
+  /* The right operand's bytes, when it's a literal */
+  if (right->aop->type == AOP_LIT)
+    for (i = 0; i < size; i++)
+      lit[i] = litByte (right->aop, i, size);
+
+  /* A multi-byte > or <= becomes a < or >=, which needs only the carry:
+     against a literal k, as >= k+1 or < k+1 (unless k is the largest
+     value, where k+1 would wrap), otherwise with the operands swapped.
+     A single byte keeps its own form -- its last SBC's Z is exact, and
+     the left operand may be in A, which a swap would load over. */
+  if ((op == '>' || op == LE_OP) && size > 1)
     {
-      loadA (right->aop, 0, right->aop->size);
-      emit ("eai", "a, #0x80");
-      emit ("sta", "(__lh5801_cmp_signA)");
-    }
-
-  if (needScratch)
-    {
-      emit ("ldi", "a, 0x00");
-      emit ("sta", "(__lh5801_cmp_scratch)");
-    }
-
-  emit ("sec", "");
-
-  for (i = size - 1; i >= 0; i--)
-    {
-      bool flip = isSigned && i == 0;
-
-      loadA (left->aop, i, size);
-      if (flip)
-        emit ("eai", "a, #0x80");
+      bool isMax = true;
 
       if (right->aop->type == AOP_LIT)
-        emit ("sbi", "a, #0x%02x", litByte (right->aop, i, size) ^ (flip ? 0x80 : 0));
-      else if (flip)
-        emit ("sbc", "(__lh5801_cmp_signA)");
-      else
-        opA ("sbc", "sbi", right->aop, i, size);
-
-      if (needScratch)
+        for (i = 0; i < size; i++)
+          if (lit[i] != (isSigned && i == 0 ? 0x7f : 0xff))
+            isMax = false;
+      if (right->aop->type == AOP_LIT && !isMax)
         {
-          emit ("ora", "(__lh5801_cmp_scratch)");
-          emit ("sta", "(__lh5801_cmp_scratch)");
+          for (i = size - 1; i >= 0 && ++lit[i] == 0; i--)
+            ;
+          op = op == '>' ? GE_OP : '<';
+        }
+      else
+        {
+          operand *t = left;
+
+          left = right;
+          right = t;
+          if (right->aop->type == AOP_LIT)
+            for (i = 0; i < size; i++)
+              lit[i] = litByte (right->aop, i, size);
+          op = op == '>' ? '<' : GE_OP;
+        }
+    }
+
+  if (op == EQ_OP || op == NE_OP)
+    {
+      /* Byte by byte, high first: the first difference branches out to
+         the end with Z clear, so Z there means every byte was equal. */
+      for (i = 0; i < size; i++)
+        {
+          loadA (left->aop, i, size);
+          if (right->aop->type == AOP_LIT)
+            emit ("cpi", "a, #0x%02x", lit[i]);
+          else
+            opA ("cpa", "cpi", right->aop, i, size);
+          if (i < size - 1)
+            emit ("bzr", "!tlabel", labelKey2num (endLabel->key));
+        }
+      if (size > 1)
+        emitLbl (endLabel);
+      endLabel = newiTempLabel (NULL);
+    }
+  else
+    {
+      /* Signed: the most-significant bytes are compared with their sign
+         bits flipped (EAI 80H), which maps signed order onto unsigned
+         order -- so every case below is then just the unsigned one. EAI
+         and LDA only touch Z, never the carry the subtraction chain is
+         threading through. The right operand's flipped MSB goes to
+         __lh5801_cmp_signA first, since SBC has no "operand xor 80H"
+         form. */
+      int low = size - 1;
+
+      if (size == 4 && left->aop->type == AOP_DIR && right->aop->type == AOP_DIR &&
+          left->aop->size == 4 && right->aop->size == 4 && helperOk (ic))
+        {
+          /* the same carry, from a helper (device/lib/lh5801/
+             _lh5801_cmp4.asm, _lh5801_scmp4.asm) */
+          emitHelper2 (isSigned ? "__lh5801_scmp4" : "__lh5801_cmp4", left->aop, right->aop, 3);
+          low = -1;
+        }
+      else if (isSigned && right->aop->type != AOP_LIT)
+        {
+          loadA (right->aop, 0, right->aop->size);
+          emit ("eai", "a, #0x80");
+          emit ("sta", "(__lh5801_cmp_signA)");
+        }
+
+      /* Only the carry matters, and with no borrow in, subtracting a
+         zero byte leaves it set: a literal's low zero bytes are skipped. */
+      if (right->aop->type == AOP_LIT)
+        while (low > 0 && lit[low] == 0)
+          low--;
+
+      if (low >= 0)
+        emit ("sec", "");
+
+      for (i = low; i >= 0; i--)
+        {
+          bool flip = isSigned && i == 0;
+
+          loadA (left->aop, i, size);
+          if (flip)
+            emit ("eai", "a, #0x80");
+
+          if (right->aop->type == AOP_LIT)
+            emit ("sbi", "a, #0x%02x", lit[i] ^ (flip ? 0x80 : 0));
+          else if (flip)
+            emit ("sbc", "(__lh5801_cmp_signA)");
+          else
+            opA ("sbc", "sbi", right->aop, i, size);
         }
     }
 
@@ -1801,19 +1961,20 @@ genCmp (const iCode *ic, iCode *ifx)
   if (ifx)
     {
       if (IC_TRUE (ifx))
-        emitCmpBranch (ic->op, true, IC_TRUE (ifx));
+        emitCmpBranch (op, true, IC_TRUE (ifx));
       else
-        emitCmpBranch (ic->op, false, IC_FALSE (ifx));
+        emitCmpBranch (op, false, IC_FALSE (ifx));
       ifx->generated = 1;
       freeAsmop (result);
       return;
     }
 
     {
-      /* C=1 (no borrow) means left>=right; Z (from the last ora/sta above)
-         means left==right. Each case below jumps to trueLabel when its
-         condition holds, falls through to "store 0" otherwise. */
-      switch (ic->op)
+      /* C=1 (no borrow) means left>=right; Z (a single byte's SBC, or the
+         compare chain above) means left==right. Each case below jumps to
+         trueLabel when its condition holds, falls through to "store 0"
+         otherwise. */
+      switch (op)
         {
         case '<':                          /* left <  right : C=0 */
           emit ("bcr", "!tlabel", labelKey2num (trueLabel->key));
@@ -2132,12 +2293,23 @@ emitShiftPass (asmop *resultAop, int size, bool isLeft, bool arithmeticRight)
     }
 }
 
-/* `bits` (0-7) single-bit shifts of resultAop in place: unrolled for one
-   or two, a counted loop for more. */
+/* `bits` (0-7) single-bit shifts of resultAop in place: a 4-byte value in
+   memory by a helper call (device/lib/lh5801/_lh5801_shl4.asm,
+   _lh5801_shr4.asm), else unrolled for one or two, a counted loop for
+   more. */
 static void
-emitBitShifts (asmop *resultAop, int size, int bits, bool isLeft, bool arithmeticRight)
+emitBitShifts (const iCode *ic, asmop *resultAop, int size, int bits, bool isLeft, bool arithmeticRight)
 {
-  if (bits <= 2)
+  if (bits && size == 4 && resultAop->type == AOP_DIR && helperOk (ic))
+    {
+      char buf[128];
+
+      dirAddr (buf, sizeof (buf), resultAop, isLeft ? 3 : 0);
+      emit ("sjp", "%s", isLeft ? "__lh5801_shl4" : arithmeticRight ? "__lh5801_sar4" : "__lh5801_shr4");
+      emit (".dw", "%s", buf);
+      emit (".db", "0x%02x", bits);
+    }
+  else if (bits <= 2)
     {
       int pass;
 
@@ -2199,8 +2371,8 @@ genMult (const iCode *ic)
   size = result->aop->size;
 
   if (size > var->aop->size)
-    genWiden (result, var);
-  else
+    genWiden (ic, result, var);
+  else if (!sameStorage (var->aop, result->aop))
     for (i = 0; i < size; i++)
       {
         loadA (var->aop, var->aop->size - size + i, var->aop->size);
@@ -2222,7 +2394,7 @@ genMult (const iCode *ic)
         }
     }
   if (byteShift < size)
-    emitBitShifts (result->aop, size, n % 8, true, false);
+    emitBitShifts (ic, result->aop, size, n % 8, true, false);
 
   freeAsmop (var);
   freeAsmop (result);
@@ -2270,7 +2442,12 @@ genShift (const iCode *ic, bool isLeft)
           bits = 0;
         }
 
-      if (isLeft)
+      if (!byteShift && sameStorage (left->aop, result->aop))
+        ;                       /* x <<= k: shifted where it is */
+      else if (!byteShift && size == 4 && left->aop->type == AOP_DIR && result->aop->type == AOP_DIR &&
+               helperOk (ic))
+        emitHelper2 ("__lh5801_cpy4", result->aop, left->aop, 0);
+      else if (isLeft)
         {
           for (i = 0; i < size - byteShift; i++)
             {
@@ -2312,20 +2489,20 @@ genShift (const iCode *ic, bool isLeft)
             }
         }
 
-      emitBitShifts (result->aop, size, bits, isLeft, arithmeticRight);
+      emitBitShifts (ic, result->aop, size, bits, isLeft, arithmeticRight);
     }
   else
     {
       symbol *loopStart = newiTempLabel (NULL);
       symbol *loopEnd = newiTempLabel (NULL);
 
-      /* left -> result (byte copy; left and result may be the same iTemp,
-         e.g. for `x <<= n`, in which case this is a no-op each byte). */
-      for (i = 0; i < size; i++)
-        {
-          loadA (left->aop, i, size);
-          storeA (result->aop, i);
-        }
+      /* left -> result (nothing to do for `x <<= n`) */
+      if (!sameStorage (left->aop, result->aop))
+        for (i = 0; i < size; i++)
+          {
+            loadA (left->aop, i, size);
+            storeA (result->aop, i);
+          }
 
       loadA (right->aop, right->aop->size - 1, right->aop->size);
       emit ("sta", "(__lh5801_shift_scratch)");
@@ -2661,6 +2838,22 @@ genUnaryMinus (const iCode *ic)
   size = result->aop->size;
   wassertl (right->aop->type == AOP_LIT || right->aop->size == size,
     "lh5801: phase-1 backend requires matching operand/result sizes for unary '-'");
+
+  /* 4 bytes in memory: negated in place by the helper (device/lib/
+     lh5801/_lh5801_neg4.asm), after a copy if the result is elsewhere */
+  if (size == 4 && result->aop->type == AOP_DIR && right->aop->type == AOP_DIR && helperOk (ic))
+    {
+      char buf[128];
+
+      if (!sameStorage (result->aop, right->aop))
+        emitHelper2 ("__lh5801_cpy4", result->aop, right->aop, 0);
+      dirAddr (buf, sizeof (buf), result->aop, 3);
+      emit ("sjp", "__lh5801_neg4");
+      emit (".dw", "%s", buf);
+      freeAsmop (right);
+      freeAsmop (result);
+      return;
+    }
 
   emit ("sec", "");
 
@@ -3095,6 +3288,8 @@ lh5801_getInstructionSize (lineNode *line)
   while (*p == ' ' || *p == '\t')
     p++;
   n = strlen (p);
+  if (!strncmp (p, ".dw", 3) || !strncmp (p, ".db", 3))
+    return instSize (p);
   if (!*p || *p == ';' || *p == '.' || (n && p[n - 1] == ':'))
     return 0;
   return instSize (p);
