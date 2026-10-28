@@ -3530,6 +3530,11 @@ genIC (iCode *ic)
     case '!':
       genNot (ic);
       break;
+    case INLINEASM:
+      /* Never priced: ralloc2.cc costs it 0 and lets no value survive it. */
+      if (!regalloc_dry_run)
+        genInline (ic);
+      break;
     default:
       /* Print the actual iCode (not just its raw numeric op) to make
          the next gap easy to identify without needing a debugger --
