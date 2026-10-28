@@ -43,6 +43,10 @@ static char dryFirst[256], drySecond[256], dryLast[256];
 static int dryLines;
 static bool dryLabelFirst;
 
+/* The current function's saved frame (collectFrameSave()). */
+set *lh5801_frameSave;
+int lh5801_frameSaveSize;
+
 /* The size in bytes of one emitted line, "mnemonic<TAB>operands" --
    by operand form, as sdas/aslh5801/m5801mch.c encodes them. */
 static int
@@ -705,14 +709,29 @@ genFunction (const iCode *ic)
         break;
       }
 
+  if (anyOnStack)
+    {
+      emit ("ldx", "s");
+      emit ("lda", "xh");
+      emit ("sta", "(__lh5801_frame_ptr)");
+      emit ("lda", "xl");
+      emit ("sta", "(__lh5801_frame_ptr + 1)");
+    }
+
+  /* the caller's copy of the saved frame goes on the stack (after the
+     frame pointer is taken: the parameters' offsets are from S at entry,
+     and before the parameters' shadows, which are part of the frame) */
+  if (lh5801_frameSaveSize && !regalloc_dry_run)
+    {
+      genLine.lineElement.isInline++;
+      emit ("sjp", "__lh5801_fsave");
+      emit (".dw", "%s__saved", sym->rname);
+      emit (".db", "0x%02x", lh5801_frameSaveSize);
+      genLine.lineElement.isInline--;
+    }
+
   if (!anyOnStack)
     return;
-
-  emit ("ldx", "s");
-  emit ("lda", "xh");
-  emit ("sta", "(__lh5801_frame_ptr)");
-  emit ("lda", "xl");
-  emit ("sta", "(__lh5801_frame_ptr + 1)");
 
   for (arg = FUNC_ARGS (sym->type); arg; arg = arg->next)
     {
@@ -744,7 +763,16 @@ genFunction (const iCode *ic)
 static void
 genEndFunction (const iCode *ic)
 {
-  (void) ic;
+  /* back from the stack: the return value is in A, X and __lh5801_ret2..,
+     which the helper leaves alone */
+  if (lh5801_frameSaveSize && !regalloc_dry_run)
+    {
+      genLine.lineElement.isInline++;
+      emit ("sjp", "__lh5801_frest");
+      emit (".dw", "%s__saved + %d", currFunc->rname, lh5801_frameSaveSize - 1);
+      emit (".db", "0x%02x", lh5801_frameSaveSize);
+      genLine.lineElement.isInline--;
+    }
   emit ("rtn", "");
 }
 
@@ -1279,33 +1307,17 @@ genReceive (iCode *ic)
 static void
 genCall (const iCode *ic)
 {
-  static bool pcallTrampolineEmitted = false;
   int parmBytes = ic->parmBytes;
 
   if (ic->op == PCALL)
     {
       operand *left = IC_LEFT (ic);
 
-      /* (Not in a dry run: that would mark it emitted without emitting it.) */
-      if (!pcallTrampolineEmitted && !regalloc_dry_run)
-        {
-          /* A plain fixed name, not SDCC's usual newiTempLabel()/!tlabel
-             numbered-local-label mechanism -- that combination tripped
-             aslh5801's branch-target-area check here for reasons not
-             fully root-caused (genReturn/genGoto's own forward "bch
-             !tlabel" branches elsewhere work fine, so it's specific to
-             this call site somehow). This block is only ever emitted
-             once for the whole file (guarded by pcallTrampolineEmitted),
-             so a fixed name can't collide with anything. */
-          pcallTrampolineEmitted = true;
-          emit ("bch", "__lh5801_pcall_trampoline_skip");
-          emit ("", "__lh5801_pcall_trampoline:");
-          genLine.lineCurr->isLabel = 1;
-          emit ("jmp", "0x0000");
-          emit ("", "__lh5801_pcall_trampoline_skip:");
-          genLine.lineCurr->isLabel = 1;
-        }
-
+      /* The call goes through a JMP whose target is patched just before
+         it (device/lib/lh5801/_lh5801_pcall.asm). It used to be emitted
+         inline, at the module's first PCALL -- but a real label in a
+         function body ends the scope of its NNNNN$ labels, and a branch
+         across it was "undefined". */
       aopOp (left);
       aopToDir (left, 0);
       wassertl (left->aop->size == 2, "lh5801: PCALL target must be a 2-byte function pointer");
@@ -3897,6 +3909,90 @@ drylh5801iCode (iCode *ic)
 }
 
 /*-----------------------------------------------------------------*/
+/* collectFrameSave - what a reentrant function saves on the stack */
+/*                                                                   */
+/* A reentrant function's locals and spilt iTemps are static, like   */
+/* everyone else's, so a second activation (recursion, or a callback  */
+/* that comes back) overwrites the first one's. Instead of addressing */
+/* them through a frame (no indexed addressing on the LH5801), the    */
+/* function pushes the ones it needs after a call at entry and pops   */
+/* them back before it returns: its parameters' and true locals'      */
+/* shadows, and every spilt iTemp live across one of its calls        */
+/* (nothing in a register is: reentrant functions preserve nothing).  */
+/* overlay.c lays them out as one block, <rname>__saved. Variadic     */
+/* functions are reentrant only to get their arguments on the stack,  */
+/* so they don't, nor does a function that calls nothing. A pointer   */
+/* to a local still reaches whichever activation is running.          */
+/*-----------------------------------------------------------------*/
+static void
+frameSaveAdd (symbol *sym)
+{
+  if (isinSet (lh5801_frameSave, sym))
+    return;
+  addSet (&lh5801_frameSave, sym);
+  lh5801_frameSaveSize += getSize (sym->type);
+}
+
+static void
+collectFrameSave (iCode *lic)
+{
+  iCode *ic, *call;
+
+  deleteSet (&lh5801_frameSave);
+  lh5801_frameSaveSize = 0;
+  if (!currFunc || !IFFUNC_ISREENT (currFunc->type) || IFFUNC_HASVARARGS (currFunc->type))
+    return;
+  for (call = lic; call; call = call->next)
+    if (call->op == CALL || call->op == PCALL)
+      break;
+  if (!call)
+    return;
+
+  for (ic = lic; ic; ic = ic->next)
+    {
+      operand *ops[3];
+      int k;
+
+      if (SKIP_IC2 (ic))
+        continue;
+      ops[0] = IC_LEFT (ic);
+      ops[1] = IC_RIGHT (ic);
+      ops[2] = IC_RESULT (ic);
+      for (k = 0; k < 3; k++)
+        {
+          symbol *sym;
+
+          if (!ops[k] || !IS_SYMOP (ops[k]))
+            continue;
+          sym = OP_SYMBOL (ops[k]);
+          if (!sym->isspilt || !sym->usl.spillLoc || sym->remat)
+            continue;
+          if (!sym->isitmp)
+            {
+              if (sym->onStack)
+                frameSaveAdd (sym->usl.spillLoc);
+              continue;
+            }
+          for (call = lic; call; call = call->next)
+            if ((call->op == CALL || call->op == PCALL) && sym->liveFrom < call->seq && sym->liveTo > call->seq)
+              {
+                frameSaveAdd (sym->usl.spillLoc);
+                break;
+              }
+        }
+    }
+  /* parameters nothing reads still arrive in their shadows */
+  {
+    value *arg;
+
+    for (arg = FUNC_ARGS (currFunc->type); arg; arg = arg->next)
+      if (arg->sym && arg->sym->onStack && arg->sym->isspilt && arg->sym->usl.spillLoc)
+        frameSaveAdd (arg->sym->usl.spillLoc);
+  }
+  wassertl (lh5801_frameSaveSize <= 0xFF, "lh5801: a reentrant function's saved frame is over 255 bytes");
+}
+
+/*-----------------------------------------------------------------*/
 /* genLH5801Code - generate code for a linear iCode chain          */
 /*-----------------------------------------------------------------*/
 void
@@ -3905,6 +4001,7 @@ genLH5801Code (iCode *lic)
   iCode *ic;
   bool isFunction = false;
 
+  collectFrameSave (lic);
   for (ic = lic; ic; ic = ic->next)
     {
       initGenLineElement ();

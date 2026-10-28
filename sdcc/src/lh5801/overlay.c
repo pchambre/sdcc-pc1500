@@ -57,6 +57,7 @@ typedef struct ovlLocal
 {
   symbol *sym;
   int size;
+  bool saved;               /* in the reentrant function's saved block */
 } ovlLocal;
 
 typedef struct ovlFunc
@@ -70,6 +71,7 @@ typedef struct ovlFunc
   bool callsOut;            /* another module, a pointer, or inline asm */
   int start;                /* frame offset in the module's block */
   bool own;                 /* keeps storage of its own */
+  bool saves;               /* has a saved block (gen.c's collectFrameSave()) */
 } ovlFunc;
 
 static ovlFunc *funcs;
@@ -99,9 +101,10 @@ lh5801_overlayFunction (ebbIndex *ebbi)
   ovlFunc *f;
   symbol *sym;
   set *mine = NULL;
-  int b;
+  int b, saved = 0;
 
-  if (lh5801_noLocalOverlay || !currFunc)
+  /* a saved block is laid out here even without the overlay */
+  if (!currFunc || (lh5801_noLocalOverlay && !lh5801_frameSaveSize))
     return;
 
   if (nFuncs == capFuncs)
@@ -121,11 +124,16 @@ lh5801_overlayFunction (ebbIndex *ebbi)
       f->locals = Safe_realloc (f->locals, (f->nLocals + 1) * sizeof (*f->locals));
       f->locals[f->nLocals].sym = sym;
       f->locals[f->nLocals].size = getSize (sym->type);
+      f->locals[f->nLocals].saved = isinSet (lh5801_frameSave, sym);
+      if (f->locals[f->nLocals].saved)
+        saved += f->locals[f->nLocals].size;
       f->size += f->locals[f->nLocals].size;
       f->nLocals++;
       deleteSetItem (&data->syms, sym);
     }
   deleteSet (&mine);
+  wassertl (saved == lh5801_frameSaveSize, "lh5801: a saved frame slot is not one of the function's locals");
+  f->saves = saved > 0;
 
   for (b = 0; b < ebbi->count; b++)
     {
@@ -249,8 +257,18 @@ lh5801_overlayEmit (FILE *of)
       if (f->nLocals)
         fprintf (of, "; %s: %d bytes%s\n", f->func->name, f->size,
                  f->own ? ", its own" : "");
+      /* the saved block first, in one piece */
+      if (f->saves)
+        {
+          fprintf (of, "%s__saved:\n", f->func->rname);
+          for (k = 0; k < f->nLocals; k++)
+            if (f->locals[k].saved)
+              fprintf (of, "%s:\n\t.ds %d\n", f->locals[k].sym->rname, f->locals[k].size);
+        }
       for (k = 0; k < f->nLocals; k++)
         {
+          if (f->locals[k].saved)
+            continue;
           if (f->own)
             fprintf (of, "%s:\n\t.ds %d\n", f->locals[k].sym->rname, f->locals[k].size);
           else
