@@ -88,7 +88,9 @@ unsigned int lh5801_reg_mask = (1u << LH5801_REG_XL) | (1u << LH5801_REG_XH) |
      --lh5801-regs=yl,yh,...   which registers the allocator may use (a,
                                xl, xh, yl, yh, ul, uh)
      --lh5801-no-overlay       every function's locals at addresses of
-                               their own (overlay.c) */
+                               their own (overlay.c)
+     --lh5801-no-outline       no repeated code moved into subroutines
+                               (outline.c) */
 static bool
 lh5801_parseOptions (int *pargc, char **argv, int *i)
 {
@@ -103,6 +105,11 @@ lh5801_parseOptions (int *pargc, char **argv, int *i)
   if (!strcmp (argv[*i], "--lh5801-no-overlay"))
     {
       lh5801_noLocalOverlay = true;
+      return true;
+    }
+  if (!strcmp (argv[*i], "--lh5801-no-outline"))
+    {
+      lh5801_noOutline = true;
       return true;
     }
   if (!strncmp (argv[*i], regsOpt, sizeof (regsOpt) - 1))
@@ -206,6 +213,17 @@ lh5801_hasNativeMulFor (iCode *ic, sym_link *left, sym_link *right)
   v = ulFromVal (OP_VALUE (lit));
   if (!v || (v & (v - 1)) || getSize (operandType (IC_RESULT (ic))) > 4)
     return false;
+  /* An unsigned byte times 16-128 into 2 bytes takes at most two passes
+     too: from AEX (x * 16) shifting left, or from x * 256 shifting right
+     (genMult()). */
+  {
+    operand *var = lit == IC_RIGHT (ic) ? IC_LEFT (ic) : IC_RIGHT (ic);
+    sym_link *vt = operandType (var);
+
+    if (v >= 16 && v <= 128 && getSize (vt) == 1 && SPEC_USIGN (getSpec (vt)) &&
+        getSize (operandType (IC_RESULT (ic))) == 2)
+      return true;
+  }
   while (v > 0xFF)
     v >>= 8;
   return v <= 4;

@@ -25,6 +25,10 @@
 #include <sys/stat.h>
 #include "dbuf_string.h"
 
+#if !OPT_DISABLE_LH5801
+void lh5801_flushCode (void);   /* lh5801/outline.c */
+#endif
+
 #ifdef _WIN32
 #include <io.h>
 #else
@@ -2284,6 +2288,13 @@ glue (void)
       /* create the interrupt vector table */
       createInterruptVect (&vBuf);
     }
+
+#if !OPT_DISABLE_LH5801
+  /* The LH5801 port holds its functions' code back until here, to move
+     code repeated across the module into subroutines (lh5801/outline.c). */
+  if (TARGET_IS_LH5801)
+    lh5801_flushCode ();
+#endif
 
   /* emit code for the all the variables declared */
   emitMaps ();

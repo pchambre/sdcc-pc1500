@@ -112,6 +112,27 @@ replace restart {
 	bcr	%6
 } if labelIsUncondJump(), notSame(%5 %6), labelInRange(%6), labelRefCountChange(%5 -1), labelRefCountChange(%6 +1)
 
+// A call right before the return is a tail call: jump there, and its RTN
+// returns for both (gen.c's recordPreservedRegs() reads such a JMP as a
+// call).
+replace restart {
+	sjp	%1
+	rtn
+} by {
+	; Peephole 5a - tail call
+	jmp	%1
+}
+
+// ...past the function's exit label, when nothing else goes there.
+replace restart {
+	sjp	%1
+%2:
+	rtn
+} by {
+	; Peephole 5b - tail call
+	jmp	%1
+} if labelRefCount(%2 0)
+
 // An unconditional JMP to a close label is a short BCH (2 bytes, not 3).
 replace {
 	jmp	%5
