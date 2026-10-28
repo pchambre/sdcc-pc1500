@@ -100,6 +100,16 @@ void __printf(const char *szFormat, ...);
 # define __at(x)
 #endif
 
+#if defined(__SDCC_lh5801)
+# define __data
+# define __idata
+# define __pdata
+# define __xdata
+# define __code
+# define __near
+# define __far
+#endif
+
 #if defined(__SDCC_hc08) || defined(__SDCC_s08)
 # define __idata __data
 # define __pdata __data

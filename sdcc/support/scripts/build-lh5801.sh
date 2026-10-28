@@ -6,7 +6,12 @@
 #
 # Paul Chambre, 2026
 #
-# Usage: build-lh5801.sh <source.c> [more.c ...] [base_addr_hex]
+# Usage: build-lh5801.sh <source.c|object.rel|library.lib> [more ...] [base_addr_hex]
+#
+#   .rel            an object already compiled with sdcc -c -mlh5801 (SDCC's
+#                   regression suite links its tests this way)
+#   .lib            an sdld library of such objects, searched like the
+#                   runtime library: only the modules referenced are linked
 #
 #   base_addr_hex   load address, in hex, no "0x" prefix (default: 4400).
 #                   This must be real, writable RAM on a PC-1500 that BASIC
@@ -92,22 +97,27 @@ RESERVE_AREA_END_HEX="40C4"  # BASIC firmware's reserve area (manual 5-3-6):
                               # hardware (see pc1500emu project notes)
 
 usage() {
-  echo "Usage: $(basename "$0") <source.c> [more.c ...] [base_addr_hex]" >&2
+  echo "Usage: $(basename "$0") <source.c|object.rel|library.lib> [more ...] [base_addr_hex]" >&2
   exit 1
 }
 
 [ $# -ge 1 ] || usage
 SRCS=()
+LIBS=()
 BASE_HEX="$DEFAULT_BASE"
 for arg in "$@"; do
   case "$arg" in
-    *.c)
+    *.c|*.rel)
       [ -f "$arg" ] || { echo "error: no such file: $arg" >&2; exit 1; }
       SRCS+=("$(cd "$(dirname "$arg")" && pwd)/$(basename "$arg")")
       ;;
+    *.lib)
+      [ -f "$arg" ] || { echo "error: no such file: $arg" >&2; exit 1; }
+      LIBS+=("$(cd "$(dirname "$arg")" && pwd)/$(basename "$arg")")
+      ;;
     *)
       [[ "$arg" =~ ^[0-9A-Fa-f]{1,4}$ ]] ||
-        { echo "error: expected a .c file or a hex base address, got: $arg" >&2; exit 1; }
+        { echo "error: expected a .c, .rel or .lib file or a hex base address, got: $arg" >&2; exit 1; }
       BASE_HEX="$arg"
       ;;
   esac
@@ -126,7 +136,7 @@ if [ $((16#$BASE_HEX)) -ge $((16#4000)) ] && [ $((16#$BASE_HEX)) -le $((16#$RESE
 fi
 
 OUTDIR="$(pwd)"
-BASENAME="$(basename "${SRCS[0]}" .c)"
+BASENAME="$(basename "${SRCS[0]}")"; BASENAME="${BASENAME%.*}"
 
 WORKDIR="$(mktemp -d)"
 trap 'rm -rf "$WORKDIR"' EXIT
@@ -144,7 +154,9 @@ mkdir -p "$LIB_CACHE"
 LIB_SRCS=("$DEVICE_LIB_LH5801"/*.asm)
 for f in "$DEVICE_LIB_LH5801"/*.c; do [ -e "$f" ] && LIB_SRCS+=("$f"); done
 for f in "${RUNTIME_SOURCES[@]}"; do LIB_SRCS+=("$DEVICE_LIB/$f.c"); done
-: > "$LIB_CACHE/$LIB_NAME.lib.new"
+# A private list, renamed into place: parallel builds (make -j in SDCC's
+# regression suite) share the cache.
+LIB_LIST="$(mktemp "$LIB_CACHE/$LIB_NAME.lib.XXXXXX")"
 for src in "${LIB_SRCS[@]}"; do
   name="${src##*/}"; name="${name%.*}"
   rel="$LIB_CACHE/$name.rel"
@@ -155,24 +167,31 @@ for src in "${LIB_SRCS[@]}"; do
       *.c) compile_c "$src" "$LIB_CACHE" ;;
     esac
   fi
-  echo "$name" >> "$LIB_CACHE/$LIB_NAME.lib.new"
+  echo "$name" >> "$LIB_LIST"
 done
-mv "$LIB_CACHE/$LIB_NAME.lib.new" "$LIB_CACHE/$LIB_NAME.lib"
+mv "$LIB_LIST" "$LIB_CACHE/$LIB_NAME.lib"
 
 # --- the program's own sources ----------------------------------------
 # The module defining main() goes first: its GSINIT holds the startup
 # code, which has to run before any other module's static initializers.
 REL_ARGS=()
 for src in "${SRCS[@]}"; do
-  compile_c "$src" "$WORKDIR"
-  name="$(basename "$src" .c)"
-  if grep -q '^_main:' "$WORKDIR/$name.asm"; then
+  case "$src" in
+    *.rel)
+      name="$(basename "$src" .rel)"
+      cp "$src" "$WORKDIR/$name.rel"
+      # sdld -u updates the listing next to each object
+      [ -f "${src%.rel}.lst" ] && cp "${src%.rel}.lst" "$WORKDIR/$name.lst"
+      ;;
+    *) compile_c "$src" "$WORKDIR"; name="$(basename "$src" .c)" ;;
+  esac
+  if grep -q '^S _main Def' "$WORKDIR/$name.rel"; then
     REL_ARGS=("$name.rel" "${REL_ARGS[@]+"${REL_ARGS[@]}"}")
   else
     REL_ARGS+=("$name.rel")
   fi
 done
-grep -q '^_main:' "$WORKDIR/${REL_ARGS[0]%.rel}.asm" ||
+grep -q '^S _main Def' "$WORKDIR/${REL_ARGS[0]}" ||
   { echo "error: no source file defines main()" >&2; exit 1; }
 
 cd "$WORKDIR"
@@ -198,6 +217,10 @@ write_lnk() {  # write_lnk <name> <area=hex_base>...
     echo "-muwx"
     echo "-i $name"
     for b in "$@"; do echo "-b ${b%%=*} = 0x${b#*=}"; done
+    for l in "${LIBS[@]+"${LIBS[@]}"}"; do
+      echo "-k $(dirname "$l")"
+      echo "-l $(basename "$l" .lib)"
+    done
     echo "-k $LIB_CACHE"
     echo "-l $LIB_NAME"
     for f in "${REL_ARGS[@]}"; do echo "$f"; done
