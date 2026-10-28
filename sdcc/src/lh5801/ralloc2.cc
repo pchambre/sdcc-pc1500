@@ -268,6 +268,9 @@ static bool inst_sane(const assignment &a, unsigned short int i, const G_t &G, c
     }
 
   bool clobbers_all = ic->op == CALL || ic->op == PCALL || ic->op == INLINEASM;
+  // ...except the Y and U halves a direct call's function is known to
+  // leave alone (gen.c's recordPreservedRegs(), or __preserves_regs)
+  sym_link *ftype = ic->op == CALL && IS_SYMOP(IC_LEFT(ic)) ? OP_SYMBOL(IC_LEFT(ic))->type : 0;
 
   for (cfg_alive_t::const_iterator v = G[i].alive.begin(); v != G[i].alive.end(); ++v)
     {
@@ -277,7 +280,8 @@ static bool inst_sane(const assignment &a, unsigned short int i, const G_t &G, c
       if (!((lh5801_reg_mask & ~unsafe_regs) & (1u << r)))
         return false;
       if (clobbers_all && G[i].dying.find(*v) == G[i].dying.end() &&
-          !(IC_RESULT(ic) && IS_SYMOP(IC_RESULT(ic)) && OP_SYMBOL_CONST(IC_RESULT(ic))->key == I[*v].v))
+          !(IC_RESULT(ic) && IS_SYMOP(IC_RESULT(ic)) && OP_SYMBOL_CONST(IC_RESULT(ic))->key == I[*v].v) &&
+          !(ftype && IS_FUNC(ftype) && r >= LH5801_REG_YL && ftype->funcAttrs.preserved_regs[r]))
         return false;
     }
   return true;
