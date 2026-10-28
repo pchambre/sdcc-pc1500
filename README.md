@@ -24,8 +24,12 @@ different here.
   at the same time share it. A function that isn't `static` keeps memory of
   its own if it calls the library or another module (which could call it
   back), so declaring helpers `static` saves RAM; `--lh5801-no-overlay`
-  turns overlaying off. See `gen.c`'s, `ralloc2.cc`'s and `overlay.c`'s own
-  header comments for the design rationale.
+  turns overlaying off. 32-bit copies, constant stores, add, subtract,
+  negate, shifts and ordered compares of values in memory call small
+  runtime helpers (`device/lib/lh5801/_lh5801_*4.asm`, operand addresses
+  inline after the call) instead of expanding byte by byte;
+  `--opt-code-speed` keeps the inline code. See `gen.c`'s, `ralloc2.cc`'s
+  and `overlay.c`'s own header comments for the design rationale.
 - **`sdcc/sdas/aslh5801/`** — the LH5801 assembler, built on the shared
   `sdas` framework used by SDCC's other targets.
 - **`sdcc/device/lib/lh5801/`** and **`sdcc/device/include/lh5801/`** — a
