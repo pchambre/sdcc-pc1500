@@ -34,7 +34,10 @@ different here.
   negate, shifts and ordered compares of values in memory call small
   runtime helpers (`device/lib/lh5801/_lh5801_*4.asm`, operand addresses
   inline after the call) instead of expanding byte by byte;
-  `--opt-code-speed` keeps the inline code. See `gen.c`'s, `ralloc2.cc`'s
+  `--opt-code-speed` keeps the inline code. Instruction sequences repeated
+  across a module are moved into shared subroutines (`outline.c`, "cross-
+  call" optimization); `--lh5801-no-outline` or `--opt-code-speed` turns
+  that off. This needs one LH5801 hook in `SDCCglue.c` (below). See `gen.c`'s, `ralloc2.cc`'s
   and `overlay.c`'s own header comments for the design rationale.
 - **`sdcc/sdas/aslh5801/`** — the LH5801 assembler, built on the shared
   `sdas` framework used by SDCC's other targets.
@@ -72,7 +75,9 @@ small changes too:
   named in an initializer (`fp t[] = { f }`): SDCC only recorded an explicit
   `&f`, and this port's local overlay must know every function that can be
   called through a pointer. For other targets this only makes `addrtaken`
-  more accurate.
+  more accurate. And `glue()` calls `lh5801_flushCode()` before
+  `emitMaps()`: the LH5801 port holds its functions' code back until then,
+  to outline repeated code across the whole module.
 - **`src/SDCCpeeph.c`** — `labelIsUncondJump()` picks each target's jump
   mnemonics; added the LH5801's (`jmp`/`bch`), and a FALSE return for a
   target with none listed instead of `strlen(NULL)`.

@@ -73,6 +73,7 @@ instSize (const char *line)
   if (mn[0] == 'b' && strcmp (mn, "bii") || !strcmp (mn, "lop") || !strcmp (mn, "vmj"))
     return 2;                         /* relative branches, LOP, VMJ */
   if (!strcmp (mn, "psh") || !strcmp (mn, "pop") || !strcmp (mn, "ldx") || !strcmp (mn, "stx") ||
+      !strcmp (mn, "adr") ||
       !strcmp (mn, "sie") || !strcmp (mn, "rie") || !strcmp (mn, "hlt") || !strcmp (mn, "am0") ||
       !strcmp (mn, "am1") || !strcmp (mn, "sdp") || !strcmp (mn, "rdp"))
     return 2;                         /* FD-prefixed */
@@ -528,6 +529,31 @@ loadPtrX (const asmop *aop, unsigned long offset)
   if (offset)
     emit ("adi", "a, #0x00");  /* propagate the low byte's carry-out */
   emit ("sta", "xh");
+}
+
+/* Pointer register `pair` ('x'/'y'/'u') = the 2-byte `aop`: a constant
+   by LDI (A untouched), anything else low byte then high byte through A
+   (the caller makes sure `aop` isn't in `pair`). */
+static void
+loadPair (const asmop *aop, char pair)
+{
+  if (aop->type == AOP_LIT)
+    {
+      emit ("ldi", "%ch, #0x%02x", pair, litByte (aop, 0, 2));
+      emit ("ldi", "%cl, #0x%02x", pair, litByte (aop, 1, 2));
+    }
+  else if (aop->type == AOP_IMMD || aop->type == AOP_FUNC)
+    {
+      emit ("ldi", "%ch, >%s", pair, aop->u.dir);
+      emit ("ldi", "%cl, <%s", pair, aop->u.dir);
+    }
+  else
+    {
+      loadA (aop, 1, 2);
+      emit ("sta", "%cl", pair);
+      loadA (aop, 0, 2);
+      emit ("sta", "%ch", pair);
+    }
 }
 
 /*-----------------------------------------------------------------*/
@@ -1329,8 +1355,11 @@ genCall (const iCode *ic)
 
       skip = calleeSize - resultSize;
 
-      for (i = 0; i < calleeSize; i++)
+      for (i = skip; i < calleeSize; i++)
         {
+          /* already where it came back (a result in X, exactly: x_sane()) */
+          if (calleeSize > 1 && i < 2 && aopReg (result->aop, i - skip) == (i ? LH5801_REG_XL : LH5801_REG_XH))
+            continue;
           if (i == 0 && calleeSize > 1)
             emit ("lda", "xh");
           else if (i == 1)
@@ -1529,6 +1558,42 @@ genAddSub (const iCode *ic, bool isSub)
       freeAsmop (right);
       freeAsmop (result);
       return;
+    }
+
+  /* A pointer register = a 2-byte value + an (unsigned, zero-extended)
+     byte -- array indexing: the 2-byte value into the register, the byte
+     into A, and ADR adds A to the register (2 bytes; instead of an ADC
+     chain through A, 7-11). */
+  if (!isSub && regPair (result->aop) && result->aop->size == 2 &&
+      ((left->aop->size == 2 && right->aop->type != AOP_LIT && right->aop->size == 1) ||
+       (right->aop->size == 2 && left->aop->type != AOP_LIT && left->aop->size == 1)))
+    {
+      char pair = regPair (result->aop);
+      const asmop *wide = left->aop->size == 2 ? left->aop : right->aop;
+      const asmop *narrow = left->aop->size == 2 ? right->aop : left->aop;
+      bool byLdi = wide->type == AOP_LIT || wide->type == AOP_IMMD || wide->type == AOP_FUNC;
+      bool inPair = regPair (wide) == pair;
+
+      if (inPair || byLdi || (!aopUsesPair (wide, pair) && !aopUsesPair (narrow, pair)))
+        {
+          if (inPair || byLdi)
+            {
+              /* the byte first: it may be in the register */
+              loadA (narrow, 0, 1);
+              if (!inPair)
+                loadPair (wide, pair);
+            }
+          else
+            {
+              loadPair (wide, pair);
+              loadA (narrow, 0, 1);
+            }
+          emit ("adr", "%c", pair);
+          freeAsmop (left);
+          freeAsmop (right);
+          freeAsmop (result);
+          return;
+        }
     }
 
   /* Three 4-byte memory operands: the helper, in place on the result --
@@ -2488,6 +2553,44 @@ genMult (const iCode *ic)
   aopOp (result);
   size = result->aop->size;
 
+  if (size == 2 && var->aop->size == 1 && n >= 4 && n <= 7)
+    {
+      /* an unsigned byte times 16-128 (main.c's lh5801_hasNativeMulFor()):
+         AEX swaps its nibbles, so x * 16 is (x >> 4, x << 4) -- then left
+         shifts for x32/x64; or x * 256 is (x, 0) -- then right shifts for
+         x64/x128. */
+      if (n <= 5)
+        {
+          /* x is read twice: the byte that may share its register last */
+          int first = aopReg (result->aop, 0) >= 0 && aopReg (result->aop, 0) == aopReg (var->aop, 0);
+          int k;
+
+          for (k = 0; k < 2; k++)
+            {
+              int b = k ? !first : first;
+
+              loadA (var->aop, 0, 1);
+              emit ("aex", "");
+              emit ("ani", "a, #0x%02x", b ? 0xf0 : 0x0f);
+              storeA (result->aop, b);
+            }
+          for (i = 4; i < n; i++)
+            emitShiftPass (result->aop, size, true, false);
+        }
+      else
+        {
+          loadA (var->aop, 0, 1);
+          storeA (result->aop, 0);
+          emit ("ldi", "a, 0x00");
+          storeA (result->aop, 1);
+          for (i = n; i < 8; i++)
+            emitShiftPass (result->aop, size, false, false);
+        }
+      freeAsmop (var);
+      freeAsmop (result);
+      return;
+    }
+
   if (size > var->aop->size)
     genWiden (ic, result, var);
   else if (!sameStorage (var->aop, result->aop))
@@ -3149,7 +3252,7 @@ recordPreservedRegs (lineNode *head)
   static const char *const known[] = {
     "lda", "sta", "ldi", "adc", "sbc", "adi", "sbi", "and", "ora", "eor", "ani", "ori", "eai",
     "cpa", "cpi", "bii", "inc", "dec", "shl", "shr", "rol", "ror", "rec", "sec", "lin", "sin",
-    "lde", "sde", "psh", "pop", "jmp", "rtn", "cin", "nop", "ldx", "stx", NULL
+    "lde", "sde", "psh", "pop", "jmp", "rtn", "cin", "nop", "ldx", "stx", "adr", "aex", NULL
   };
   bool regs[LH5801_NUM_REGS];
   lineNode *ln;
@@ -3184,7 +3287,10 @@ recordPreservedRegs (lineNode *head)
       while (*ops == '\t' || *ops == ' ')
         ops++;
 
-      if (!strcmp (mn, "sjp"))
+      /* a call -- or a tail call, a JMP (or BCH, if close) to a function
+         rather than to one of this function's NNNNN$ labels (peeph.def) */
+      if (!strcmp (mn, "sjp") ||
+          ((!strcmp (mn, "jmp") || (mn[0] == 'b' && strcmp (mn, "bii"))) && ops[0] && ops[strlen (ops) - 1] != '$'))
         {
           const bool *p = strncmp (ops, "__lh5801_", 9) ? preservedByCall (ops) : NULL;
 
@@ -3521,8 +3627,9 @@ genLH5801Code (iCode *lic)
   if (!options.nopeep)
     peepHole (&genLine.lineHead);
   recordPreservedRegs (genLine.lineHead);
-  printLine (genLine.lineHead, codeOutBuf);
-  destroy_line_list ();
+  /* printed at the end of the module, after outlining (outline.c) */
+  lh5801_deferCode (genLine.lineHead, codeOutBuf);
+  genLine.lineHead = genLine.lineCurr = NULL;
 }
 
 /* The size in bytes of one line of this port's assembly, for the
@@ -3589,7 +3696,7 @@ genLH5801OrphanedLabels (eBBlock **ebbs, int count)
 
   if (anyEmitted)
     {
-      printLine (genLine.lineHead, codeOutBuf);
-      destroy_line_list ();
+      lh5801_deferCode (genLine.lineHead, codeOutBuf);
+      genLine.lineHead = genLine.lineCurr = NULL;
     }
 }

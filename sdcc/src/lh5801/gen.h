@@ -99,4 +99,12 @@ void genLH5801OrphanedLabels (eBBlock **ebbs, int count);
    gen.c's normal per-function codegen path. */
 void genLH5801AssemblerStart (FILE *of);
 
+/* outline.c: a function's finished lines are kept (lh5801_deferCode())
+   until SDCCglue.c's glue() calls lh5801_flushCode(), which outlines code
+   repeated across the module into subroutines, then prints everything.
+   --lh5801-no-outline (lh5801_noOutline) turns the outlining off. */
+extern bool lh5801_noOutline;
+void lh5801_deferCode (lineNode *head, struct dbuf_s *buf);
+void lh5801_flushCode (void);
+
 #endif
