@@ -28,9 +28,9 @@
 # returns to BASIC (see src/lh5801/main.c's lh5801_genInitStartup()).
 #
 # The runtime is a library, not a fixed list of objects: every
-# device/lib/lh5801/*.asm and *.c file, plus the generic C runtime
-# helpers in RUNTIME_SOURCES below (stdio, integer multiply/divide,
-# strings, rand), is compiled once into a cached directory and listed in
+# device/lib/lh5801/*.asm and *.c file, plus SDCC's generic C library
+# (device/lib/incl.mk's COMMON_* lists: stdio, stdlib, string, ctype,
+# math, float, long long, stdc_bit...), is compiled once into a cached directory and listed in
 # a plain-text sdld library (one .rel name per line, see
 # sdas/linksrc/lklib.c), so the linker only pulls in the modules a
 # program actually references. The cache is rebuilt per file whenever a
@@ -73,20 +73,29 @@ if [ -n "$SDCCFLAGS" ]; then
   LIB_CACHE="$LIB_CACHE-$(echo "$SDCCFLAGS" | md5sum | cut -c1-8)"
 fi
 LIB_NAME="pc1500"
-# Generic (non-port-specific) C runtime sources from device/lib -- sdcc
-# doesn't pull these in on its own. All confirmed to compile and assemble
-# with this backend. Not __memcpy, memset, strcpy or strlen: those are
-# device/lib/lh5801/string_*.asm, on TIN/SIN/LIN/CIN.
+# SDCC's generic C library: every source in device/lib/incl.mk's COMMON_*
+# lists (what every port's library is built from), compiled the way
+# device/lib/Makefile does -- sdcc doesn't pull these in on its own. All
+# compile and assemble with this backend. Not the ones the port has in
+# assembler: device/lib/lh5801/string_*.asm, on TIN/SIN/LIN/CIN.
+RUNTIME_EXCLUDE=" _memset "
+# plus the ones device/lib/Makefile has each port choose (its SOURCES_*
+# lists): integer and long long arithmetic, conversions, heap, stdio
 RUNTIME_SOURCES=(
-  printf_large vprintf sprintf
-  _mulint _muluchar _mulschar _mullong
-  _divuint _divsint _moduint _modsint
-  _divuchar _moduchar _divschar _modschar
-  _divulong _divslong _modulong _modslong
-  _strcat _strcmp _strncpy _strncmp _strchr
-  memcpy _memcmp _memmove
-  abs rand __itoa
+  _muluchar _mulschar _mulint _mullong _mullonglong
+  _divuchar _divschar _moduchar _modschar
+  _divuint _divsint _moduint _modsint _divulong
+  _divslonglong _divulonglong _modslonglong _modulonglong
+  _srulonglong _srslonglong _slulonglong _slslonglong
+  __itoa __ltoa _strcmp strnlen memcpy _memmove
+  div ldiv lldiv imaxdiv vprintf sprintf
 )
+for f in $(sed -n '/^COMMON_[A-Z]* *=/,/^$/p' "$SDCC_ROOT/device/lib/incl.mk"); do
+  [[ "$f" == *.c ]] || continue          # the names, not "=" or "\"
+  f="${f%.c}"
+  [[ "$RUNTIME_EXCLUDE" == *" $f "* ]] || RUNTIME_SOURCES+=("$f")
+done
+LIBFLAGS="--std-c23"
 
 DEFAULT_BASE="4400"
 EXT_RAM_START_HEX="4800"  # CE-158 extension RAM boundary -- see warning below
@@ -142,10 +151,10 @@ WORKDIR="$(mktemp -d)"
 trap 'rm -rf "$WORKDIR"' EXIT
 
 compile_c() {  # compile_c <src.c> <out_dir> -> <out_dir>/<name>.rel
-  local src="$1" out="$2" name
+  local src="$1" out="$2" flags="${3:-}" name
   name="$(basename "$src" .c)"
-  # shellcheck disable=SC2086 -- SDCCFLAGS is a word list
-  "$SDCC" -S -mlh5801 $SDCCFLAGS -I"$DEVICE_INCLUDE" -I"$DEVICE_INCLUDE_LH5801" "$src" -o "$out/$name.asm"
+  # shellcheck disable=SC2086 -- SDCCFLAGS and flags are word lists
+  "$SDCC" -S -mlh5801 $SDCCFLAGS $flags -I"$DEVICE_INCLUDE" -I"$DEVICE_INCLUDE_LH5801" "$src" -o "$out/$name.asm"
   "$ASLH5801" -logs "$out/$name.asm" >/dev/null
 }
 
@@ -170,6 +179,7 @@ for src in "${LIB_SRCS[@]}"; do
      [ "$ASLH5801" -nt "$rel" ] || [ "$DEVICE_INCLUDE_LH5801/pc1500.h" -nt "$rel" ]; then
     case "$src" in
       *.asm) "$ASLH5801" -logs -o "$LIB_TMP/$name.rel" "$src" >/dev/null ;;
+      "$DEVICE_LIB"/*.c) compile_c "$src" "$LIB_TMP" "$LIBFLAGS" ;;
       *.c) compile_c "$src" "$LIB_TMP" ;;
     esac
     for f in "$LIB_TMP/$name".*; do

@@ -787,6 +787,24 @@ genEndFunction (const iCode *ic)
 /* PCALL codegen must read a called function's result from the same */
 /* place.                                                            */
 /*-----------------------------------------------------------------*/
+/* Where byte i (2 or more) of a return value travels: __lh5801_ret2..
+   _ret7, then the __lh5801_ret8 block -- separate modules
+   (device/lib/lh5801/_lh5801_ret*.asm), so only a program returning more
+   than 8 bytes has the second one. */
+#define LH5801_MAX_RET 64
+
+static const char *
+retByte (int i)
+{
+  static char buf[32];
+
+  if (i < 8)
+    SNPRINTF (buf, sizeof (buf), "(__lh5801_ret%d)", i);
+  else
+    SNPRINTF (buf, sizeof (buf), "(__lh5801_ret8 + %d)", i - 8);
+  return buf;
+}
+
 static void
 genReturn (const iCode *ic)
 {
@@ -797,8 +815,8 @@ genReturn (const iCode *ic)
       aopOp (left);
       aopToDir (left, 0);
 
-      wassertl (left->aop->size <= 8,
-        "lh5801: phase-1 backend only supports 0- to 8-byte return values");
+      wassertl (left->aop->size <= LH5801_MAX_RET,
+        "lh5801: return value over 64 bytes");
 
       if (left->aop->size == 1)
         loadA (left->aop, 0, 1);
@@ -828,7 +846,7 @@ genReturn (const iCode *ic)
               for (i = 2; i < left->aop->size; i++)
                 {
                   loadA (left->aop, i, left->aop->size);
-                  emit ("sta", "(__lh5801_ret%d)", i);
+                  emit ("sta", "%s", retByte (i));
                 }
             }
         }
@@ -1386,8 +1404,8 @@ genCall (const iCode *ic)
         funcType = OP_SYMBOL (IC_LEFT (ic))->type->next;
       calleeSize = IS_VOID (funcType) ? 0 : getSize (funcType);
 
-      wassertl (calleeSize <= 8,
-        "lh5801: phase-1 backend only supports 0- to 8-byte call results");
+      wassertl (calleeSize <= LH5801_MAX_RET,
+        "lh5801: call result over 64 bytes");
       wassertl (resultSize <= calleeSize,
         "lh5801: call result operand wider than the callee's own return type");
 
@@ -1403,7 +1421,7 @@ genCall (const iCode *ic)
           else if (i == 1)
             emit ("lda", "xl");
           else if (i >= 2)
-            emit ("lda", "(__lh5801_ret%d)", i);
+            emit ("lda", "%s", retByte (i));
           /* i == 0 && calleeSize == 1: already sitting in A, no load needed. */
 
           if (i >= skip)
