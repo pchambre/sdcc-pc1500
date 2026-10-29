@@ -374,9 +374,9 @@ storeA (const asmop *aop, int offset)
 
 /* A = A <op> byte `offset` of `aop`: memMn is the memory/register form
    (adc, sbc, and, ora, eor, cpa), immMn the immediate one (adi, sbi,
-   ani, ori, eai, cpi) for a literal. Only ADC, SBC and CPA (like LDA/
-   STA) take a register half as their operand -- AND/ORA/EOR have no such
-   form. */
+   ani, ori, eai, cpi) for a literal or a link-time constant address.
+   Only ADC, SBC and CPA (like LDA/STA) take a register half as their
+   operand -- AND/ORA/EOR have no such form. */
 static void
 opA (const char *memMn, const char *immMn, const asmop *aop, int offset, int size)
 {
@@ -384,6 +384,12 @@ opA (const char *memMn, const char *immMn, const asmop *aop, int offset, int siz
 
   if (aop->type == AOP_LIT)
     emit (immMn, "a, #0x%02x", litByte (aop, offset, size));
+  else if (aop->type == AOP_FUNC || aop->type == AOP_IMMD)
+    {
+      /* a link-time constant address, as in loadA() */
+      wassertl (size == 2, "lh5801: a function reference or constant address must be a 2-byte pointer");
+      emit (immMn, "a, %s%s", offset == 0 ? ">" : "<", aop->u.dir);
+    }
   else if (r >= 0)
     {
       wassertl (r != LH5801_REG_A, "lh5801: opA() with A as both operands");
@@ -788,10 +794,10 @@ genEndFunction (const iCode *ic)
 /* place.                                                            */
 /*-----------------------------------------------------------------*/
 /* Where byte i (2 or more) of a return value travels: __lh5801_ret2..
-   _ret7, then the __lh5801_ret8 block -- separate modules
-   (device/lib/lh5801/_lh5801_ret*.asm), so only a program returning more
-   than 8 bytes has the second one. */
-#define LH5801_MAX_RET 64
+   _ret7, then the __lh5801_ret8 block (to 63), then __lh5801_ret64 --
+   separate modules (device/lib/lh5801/_lh5801_ret*.asm), so only a
+   program returning more than 8 (64) bytes has the second (third) one. */
+#define LH5801_MAX_RET 256
 
 static const char *
 retByte (int i)
@@ -800,8 +806,10 @@ retByte (int i)
 
   if (i < 8)
     SNPRINTF (buf, sizeof (buf), "(__lh5801_ret%d)", i);
-  else
+  else if (i < 64)
     SNPRINTF (buf, sizeof (buf), "(__lh5801_ret8 + %d)", i - 8);
+  else
+    SNPRINTF (buf, sizeof (buf), "(__lh5801_ret64 + %d)", i - 64);
   return buf;
 }
 
@@ -816,7 +824,7 @@ genReturn (const iCode *ic)
       aopToDir (left, 0);
 
       wassertl (left->aop->size <= LH5801_MAX_RET,
-        "lh5801: return value over 64 bytes");
+        "lh5801: return value over 256 bytes");
 
       if (left->aop->size == 1)
         loadA (left->aop, 0, 1);
@@ -926,6 +934,43 @@ genIpush (const iCode *ic)
     {
       loadA (left->aop, i, size);
       emit ("psh", "a");
+    }
+
+  freeAsmop (left);
+}
+
+/*-----------------------------------------------------------------*/
+/* genIpushValueAtAddress - push a struct argument: IC_LEFT points */
+/* to it. The same order as genIpush(), last byte first, so X goes */
+/* down from the last byte (LDE) -- a constant address is read      */
+/* directly. ralloc2.cc lets X hold only the pointer, and only when */
+/* nothing reads it afterwards.                                     */
+/*-----------------------------------------------------------------*/
+static void
+genIpushValueAtAddress (const iCode *ic)
+{
+  operand *left = IC_LEFT (ic);
+  int size = getSize (operandType (left)->next);
+  int i;
+
+  aopOp (left);
+  wassertl (left->aop->size == 2, "lh5801: a struct argument's address must be a 2-byte pointer");
+  wassertl (size >= 1 && size <= 0x100, "lh5801: a struct argument must be 1-256 bytes");
+
+  if (left->aop->type == AOP_IMMD)
+    for (i = size - 1; i >= 0; i--)
+      {
+        emit ("lda", "(%s + %d)", left->aop->u.dir, i);
+        emit ("psh", "a");
+      }
+  else
+    {
+      loadPtrX (left->aop, size - 1);
+      for (i = 0; i < size; i++)
+        {
+          emit ("lde", "x");
+          emit ("psh", "a");
+        }
     }
 
   freeAsmop (left);
@@ -1130,6 +1175,26 @@ storeLiteral (const iCode *ic, const asmop *result, const asmop *lit)
    full width -- byteOfVal() already knows its value's real high bytes.
    Zero-extending everything (as this used to) silently turned
    `long v = -7;`-style widening of a signed variable into 65529. */
+/* A = the byte that widens a non-literal `op`: its sign (0x00/0xFF) if
+   it is signed, else 0. */
+static void
+loadExtByteA (operand *op)
+{
+  if ((op->aop->type == AOP_DIR || op->aop->type == AOP_REG) &&
+      !SPEC_USIGN (getSpec (operandType (op))) && !IS_PTR (operandType (op)))
+    {
+      symbol *positive = newiTempLabel (NULL);
+
+      loadA (op->aop, 0, op->aop->size);
+      emit ("ani", "a, #0x80");
+      emit ("bzs", "!tlabel", labelKey2num (positive->key));
+      emit ("ldi", "a, 0xff");
+      emitLbl (positive);
+    }
+  else
+    emit ("ldi", "a, 0x00");
+}
+
 static void
 genWiden (const iCode *ic, operand *result, operand *right)
 {
@@ -1144,19 +1209,7 @@ genWiden (const iCode *ic, operand *result, operand *right)
       return;
     }
 
-  if ((right->aop->type == AOP_DIR || right->aop->type == AOP_REG) &&
-      !SPEC_USIGN (getSpec (operandType (right))) && !IS_PTR (operandType (right)))
-    {
-      symbol *positive = newiTempLabel (NULL);
-
-      loadA (right->aop, 0, rightSize);
-      emit ("ani", "a, #0x80");
-      emit ("bzs", "!tlabel", labelKey2num (positive->key));
-      emit ("ldi", "a, 0xff");
-      emitLbl (positive);
-    }
-  else
-    emit ("ldi", "a, 0x00");
+  loadExtByteA (right);
 
   for (i = 0; i < extra; i++)
     {
@@ -1364,6 +1417,13 @@ genCall (const iCode *ic)
         loadSends (ic);
       emit ("sjp", "__lh5801_pcall_trampoline");
     }
+  else if (!IS_SYMOP (IC_LEFT (ic)))
+    {
+      /* a call through a constant address, `((void (*)(void)) 0xE000)()` */
+      if (!regalloc_dry_run)
+        loadSends (ic);
+      emit ("sjp", "0x%04x", (unsigned) (ulFromVal (OP_VALUE (IC_LEFT (ic))) & 0xFFFF));
+    }
   else
     {
       symbol *sym = OP_SYMBOL (IC_LEFT (ic));
@@ -1413,11 +1473,11 @@ genCall (const iCode *ic)
       if (ic->op == PCALL)
         funcType = operandType (IC_LEFT (ic))->next->next;
       else
-        funcType = OP_SYMBOL (IC_LEFT (ic))->type->next;
+        funcType = operandType (IC_LEFT (ic))->next;
       calleeSize = IS_VOID (funcType) ? 0 : getSize (funcType);
 
       wassertl (calleeSize <= LH5801_MAX_RET,
-        "lh5801: call result over 64 bytes");
+        "lh5801: call result over 256 bytes");
       wassertl (resultSize <= calleeSize,
         "lh5801: call result operand wider than the callee's own return type");
 
@@ -1908,20 +1968,18 @@ genAddSub (const iCode *ic, bool isSub)
      a 1-byte AOP_LIT -- the *value* 1 is still perfectly well-defined at
      byte 0 for a 2-byte operation, nothing to reject here).
 
-     A mismatched AOP_DIR/AOP_FUNC operand can only be *narrower* than
-     the result, never wider (SDCC's own usual-arithmetic-conversion
-     rules never shrink an operand for a '+'/'-'), and gets zero-extended
+     A narrower AOP_DIR/AOP_FUNC operand gets zero-extended
      -- needed for e.g. `ptr + narrowIndex` (a byte-sized array index
      added to a 2-byte pointer, confirmed needed compiling any
      `arr[i]`-style indexing where `i` is narrower than the pointer --
      SDCC represents this as a plain '+' iCode with mismatched operand
      sizes, expecting the backend to widen, not an explicit CAST first).
      Signed widening isn't handled (matches genCast()'s own documented
-     limitation) -- every real caller so far is unsigned. */
-  wassertl (left->aop->type == AOP_LIT || left->aop->size <= size,
-    "lh5801: phase-1 backend can only widen (never narrow) an operand in +/-");
-  wassertl (right->aop->type == AOP_LIT || right->aop->size <= size,
-    "lh5801: phase-1 backend can only widen (never narrow) an operand in +/-");
+     limitation) -- every real caller so far is unsigned.
+
+     A wider operand (SDCC narrows `(char) (a + b)` of longs to a 1-byte
+     '+' on the 4-byte operands) only gives its low bytes, the last ones:
+     its extra is negative, and byte i - extra is still the right one. */
   leftExtra = (left->aop->type == AOP_LIT) ? 0 : size - left->aop->size;
   rightExtra = (right->aop->type == AOP_LIT) ? 0 : size - right->aop->size;
 
@@ -2559,7 +2617,7 @@ genBitwise (const iCode *ic)
   operand *result = IC_RESULT (ic);
   operand *left = IC_LEFT (ic);
   operand *right = IC_RIGHT (ic);
-  int size, i;
+  int size, i, lskip, rskip;
   const char *memMnemonic;
   const char *immMnemonic;
   iCode *ifx;
@@ -2641,23 +2699,37 @@ genBitwise (const iCode *ic)
       return;
     }
 
-  /* Same AOP_LIT-size exemption as genAddSub()/genCmp(). */
-  if (left->aop->type != AOP_LIT)
-    size = left->aop->size;
-  else if (right->aop->type != AOP_LIT)
-    size = right->aop->size;
-  else
-    size = (left->aop->size > right->aop->size) ? left->aop->size : right->aop->size;
+  /* Same AOP_LIT-size exemption as genAddSub()/genCmp(). An operand wider
+     than the result (SDCC narrows `(char) (a & b)` of longs to a 1-byte
+     '&' on the 4-byte operands) gives only its low bytes, the last ones.
+     A narrower one (`uint8_t & 0x0100` into an int, the cast folded into
+     the literal) is swapped to the left if need be -- all three are
+     commutative -- and its missing high bytes are its extension. */
+  size = result->aop->size;
+  lskip = left->aop->type == AOP_LIT ? 0 : left->aop->size - size;
+  rskip = right->aop->type == AOP_LIT ? 0 : right->aop->size - size;
 
-  wassertl ((left->aop->type == AOP_LIT || left->aop->size == size) &&
-            (right->aop->type == AOP_LIT || right->aop->size == size) &&
-            result->aop->size == size,
-    "lh5801: phase-1 backend requires matching operand/result sizes for &/|/^");
+  if (rskip < 0 && lskip >= 0)
+    {
+      operand *t = left;
+      int s = lskip;
+
+      left = right;
+      right = t;
+      lskip = rskip;
+      rskip = s;
+    }
+
+  wassertl (rskip >= 0,
+    "lh5801: phase-1 backend can't widen both operands for &/|/^");
 
   for (i = 0; i < size; i++)
     {
-      loadA (left->aop, i, size);
-      opA (memMnemonic, immMnemonic, right->aop, i, size);
+      if (i + lskip < 0)
+        loadExtByteA (left);
+      else
+        loadA (left->aop, i + lskip, size + lskip);
+      opA (memMnemonic, immMnemonic, right->aop, i + rskip, size + rskip);
       storeA (result->aop, i);
     }
 
@@ -3396,6 +3468,39 @@ genUnaryMinus (const iCode *ic)
 }
 
 /*-----------------------------------------------------------------*/
+/* genDummyRead - a volatile read whose value is thrown away         */
+/* ("(void) v;", an unused "if (v)"): each memory byte goes through  */
+/* A once, which never holds a live value (ralloc2.cc's unsafe_regs). */
+/* A literal or a register has no read to do.                        */
+/*-----------------------------------------------------------------*/
+static void
+genDummyRead (const iCode *ic)
+{
+  operand *ops[2];
+  int n, i;
+
+  ops[0] = IC_LEFT (ic);
+  ops[1] = IC_RIGHT (ic);
+  for (n = 0; n < 2; n++)
+    {
+      operand *op = ops[n];
+
+      if (!op || !IS_SYMOP (op))
+        continue;
+      aopOp (op);
+      if (op->aop->type == AOP_DIR)
+        {
+          /* isInline: dropReloads() would take a read right after a store */
+          genLine.lineElement.isInline++;
+          for (i = 0; i < op->aop->size; i++)
+            loadA (op->aop, i, op->aop->size);
+          genLine.lineElement.isInline--;
+        }
+      freeAsmop (op);
+    }
+}
+
+/*-----------------------------------------------------------------*/
 /* genNot - generate code for '!' (logical NOT)                    */
 /*                                                                   */
 /* Same "OR every byte together" truthiness test genIfx() uses, just */
@@ -3426,8 +3531,6 @@ genNot (const iCode *ic)
 
   loadTruthA (right->aop, size, IS_FLOAT (operandType (right)));
 
-  freeAsmop (right);
-
   emit ("bzs", "!tlabel", labelKey2num (trueLabel->key));
   emit ("ldi", "a, 0x00");
   emit ("bch", "!tlabel", labelKey2num (endLabel->key));
@@ -3436,6 +3539,8 @@ genNot (const iCode *ic)
   emitLbl (endLabel);
 
   storeA (result->aop, 0);
+  /* after the store: packing can make "E = !E" one operand for both */
+  freeAsmop (right);
   freeAsmop (result);
 }
 
@@ -3826,6 +3931,9 @@ genIC (iCode *ic)
     case IPUSH:
       genIpush (ic);
       break;
+    case IPUSH_VALUE_AT_ADDRESS:
+      genIpushValueAtAddress (ic);
+      break;
     case SEND:
       genSend (ic);
       break;
@@ -3882,6 +3990,9 @@ genIC (iCode *ic)
       break;
     case '!':
       genNot (ic);
+      break;
+    case DUMMY_READ_VOLATILE:
+      genDummyRead (ic);
       break;
     case INLINEASM:
       /* Never priced: ralloc2.cc costs it 0 and lets no value survive it. */

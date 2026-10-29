@@ -163,9 +163,10 @@ static bool operand_dying(const operand *o, unsigned short int i, const G_t &G, 
 }
 
 // X is gen.c's own register for a few iCodes: pointer accesses (it loads
-// the pointer into X -- unless the pointer already is X), the address of a
-// stack parameter (loadStackAddrToX()), and calls and returns (a 2-byte
-// value comes back in X; a call's stack arguments are popped through X).
+// the pointer into X -- unless the pointer already is X), pushing a struct
+// argument, the address of a stack parameter (loadStackAddrToX()), and
+// calls and returns (a 2-byte value comes back in X; a call's stack
+// arguments are popped through X).
 // At those iCodes nothing may be in X but the operand that is X, whole;
 // everywhere else gen.c doesn't touch X.
 template <class G_t, class I_t>
@@ -199,6 +200,12 @@ static bool x_sane(const assignment &a, unsigned short int i, const G_t &G, cons
         return false;
       allowed = IC_RESULT(ic);      // the pointer
       allowed_ok = exactly_x(allowed, a, i, G, I);
+      break;
+    case IPUSH_VALUE_AT_ADDRESS:
+      if (IS_ITEMP(IC_LEFT(ic)) && OP_SYMBOL_CONST(IC_LEFT(ic))->remat)
+        return true;                // a constant address: direct, no X
+      allowed = IC_LEFT(ic);        // X walks the struct, so it's spent
+      allowed_ok = exactly_x(allowed, a, i, G, I) && operand_dying(allowed, i, G, I);
       break;
     case ADDRESS_OF:
       if (!IS_SYMOP(IC_LEFT(ic)) || !OP_SYMBOL_CONST(IC_LEFT(ic))->onStack)

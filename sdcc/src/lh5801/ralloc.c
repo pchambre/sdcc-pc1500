@@ -375,8 +375,9 @@ lh5801_assignRegisters (ebbIndex *ebbi)
      same way an itemp spill gets one below, so genFunction()'s prologue
      (gen.c) has somewhere to copy the real, caller-pushed value into
      once, up front. Must run before genLH5801Code(): that's what
-     actually reads psym->usl.spillLoc while emitting the copy. */
-  for (arg = FUNC_ARGS (currFunc->type); arg; arg = arg->next)
+     actually reads psym->usl.spillLoc while emitting the copy. (No
+     currFunc for a static initializer's code: no parameters either.) */
+  for (arg = currFunc ? FUNC_ARGS (currFunc->type) : NULL; arg; arg = arg->next)
     {
       symbol *psym = arg->sym;
 
