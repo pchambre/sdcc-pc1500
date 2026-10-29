@@ -1170,6 +1170,20 @@ genWiden (const iCode *ic, operand *result, operand *right)
     }
 }
 
+/* A value's truth into Z (and A): its bytes ORed together -- but not a
+   float's sign bit, or -0.0 would be true. */
+static void
+loadTruthA (asmop *aop, int size, bool isFloat)
+{
+  int i;
+
+  loadA (aop, 0, size);
+  if (isFloat)
+    emit ("ani", "a, #0x7f");
+  for (i = 1; i < size; i++)
+    opA ("ora", "ori", aop, i, size);
+}
+
 static void
 genCast (const iCode *ic)
 {
@@ -1196,9 +1210,7 @@ genCast (const iCode *ic)
       /* to bool: (right != 0) -- the bytes ORed together, then 0 or 1 */
       symbol *zero = newiTempLabel (NULL);
 
-      loadA (right->aop, 0, rightSize);
-      for (i = 1; i < rightSize; i++)
-        opA ("ora", "ori", right->aop, i, rightSize);
+      loadTruthA (right->aop, rightSize, IS_FLOAT (operandType (right)));
       if (rightSize == 1 && aopReg (right->aop, 0) == LH5801_REG_A)
         emit ("cpi", "a, 0x00");  /* no LDA set Z */
       emit ("bzs", "!tlabel", labelKey2num (zero->key));
@@ -2510,19 +2522,13 @@ static void
 genIfx (const iCode *ic)
 {
   operand *cond = IC_COND (ic);
-  int size, i;
+  int size;
 
   aopOp (cond);
   aopToDir (cond, 0);
   size = cond->aop->size;
 
-  for (i = 0; i < size; i++)
-    {
-      if (i == 0)
-        loadA (cond->aop, 0, size);
-      else
-        opA ("ora", "ori", cond->aop, i, size);
-    }
+  loadTruthA (cond->aop, size, IS_FLOAT (operandType (cond)));
 
   freeAsmop (cond);
 
@@ -3337,6 +3343,29 @@ genUnaryMinus (const iCode *ic)
   wassertl (right->aop->type == AOP_LIT || right->aop->size == size,
     "lh5801: phase-1 backend requires matching operand/result sizes for unary '-'");
 
+  /* A float is negated by its sign bit, bit 7 of byte 0 -- not by the
+     two's complement below */
+  if (IS_FLOAT (operandType (result)))
+    {
+      if (!sameStorage (result->aop, right->aop))
+        {
+          if (result->aop->type == AOP_DIR && right->aop->type == AOP_DIR && helperOk (ic))
+            emitHelper2 ("__lh5801_cpy4", result->aop, right->aop, 0);
+          else
+            for (i = 1; i < size; i++)
+              {
+                loadA (right->aop, i, size);
+                storeA (result->aop, i);
+              }
+        }
+      loadA (right->aop, 0, size);
+      emit ("eai", "a, #0x80");
+      storeA (result->aop, 0);
+      freeAsmop (right);
+      freeAsmop (result);
+      return;
+    }
+
   /* 4 bytes in memory: negated in place by the helper (device/lib/
      lh5801/_lh5801_neg4.asm), after a copy if the result is elsewhere */
   if (size == 4 && result->aop->type == AOP_DIR && right->aop->type == AOP_DIR && helperOk (ic))
@@ -3380,7 +3409,7 @@ genNot (const iCode *ic)
   /* newiCode('!', operand, 0) (SDCCicode.c) -- same IC_LEFT-not-IC_RIGHT
      convention as UNARYMINUS above. */
   operand *right = IC_LEFT (ic);
-  int size, i;
+  int size;
   /* newiTempLabel()/!tlabel -- see the identical comment in genCmp()
      above for why a plain fixed-name label here would break aslh5801's
      reusable-local-symbol scoping for every numbered label elsewhere
@@ -3395,13 +3424,7 @@ genNot (const iCode *ic)
 
   size = right->aop->size;
 
-  for (i = 0; i < size; i++)
-    {
-      if (i == 0)
-        loadA (right->aop, 0, size);
-      else
-        opA ("ora", "ori", right->aop, i, size);
-    }
+  loadTruthA (right->aop, size, IS_FLOAT (operandType (right)));
 
   freeAsmop (right);
 
