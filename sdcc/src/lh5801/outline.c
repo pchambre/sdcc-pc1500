@@ -53,14 +53,25 @@ typedef struct chunk
 
 static chunk *chunks;
 static int nChunks;
+static bool flushed;
+
+static void freeLines (lineNode *ln, lineNode *stop);
 
 /* gen.c's genLH5801Code(): keep a function's lines (or GSINIT's) for
-   lh5801_flushCode() to print to `buf`. */
+   lh5801_flushCode() to print to `buf`. Code generated after the flush
+   -- glue's emitMaps() compiles the initializers of absolute and
+   named-address-space globals into GSINIT -- is printed straight away. */
 void
 lh5801_deferCode (lineNode *head, struct dbuf_s *buf)
 {
   if (!head)
     return;
+  if (flushed)
+    {
+      printLine (head, buf);
+      freeLines (head, NULL);
+      return;
+    }
   chunks = Safe_realloc (chunks, (nChunks + 1) * sizeof (*chunks));
   chunks[nChunks].head = head;
   chunks[nChunks].buf = buf;
@@ -480,6 +491,7 @@ lh5801_flushCode (void)
 {
   int c, i;
 
+  flushed = true;
   if (!lh5801_noOutline && !optimize.codeSpeed)
     {
       int len = 0, n = 0;
