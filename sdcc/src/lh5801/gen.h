@@ -105,6 +105,21 @@ void genLH5801AssemblerStart (FILE *of);
 extern set *lh5801_frameSave;
 extern int lh5801_frameSaveSize;
 
+/* Its locals with a stack slot (ralloc.c's planSlots()): the slot is at
+   offset from the address in lh5801_frameBase (a static, part of the
+   saved frame); a synced one also has a shadow that gen.c's slotSync()
+   mirrors. The mirrored ones come first. */
+typedef struct
+{
+  symbol *sym;
+  int offset;
+  bool synced;
+} lh5801_slot;
+extern lh5801_slot *lh5801_slots;
+extern int lh5801_nSlots;
+extern int lh5801_slotSize;
+extern symbol *lh5801_frameBase;
+
 /* outline.c: a function's finished lines are kept (lh5801_deferCode())
    until SDCCglue.c's glue() calls lh5801_flushCode(), which outlines code
    repeated across the module into subroutines, then prints everything.

@@ -12,10 +12,16 @@
 ;	sjp	__lh5801_fsave		; at entry
 ;	.dw	block
 ;	.db	n
+;	.db	slots
 ;	...
 ;	sjp	__lh5801_frest		; before RTN
 ;	.dw	block + n - 1
 ;	.db	n
+;	.db	slots
+;
+; `slots` more bytes are reserved above the block, uninitialized: the
+; function's stack slots (ralloc.c's planSlots()), for the locals a
+; pointer can reach -- at S + 1 when fsave returns.
 ;
 ; Both take the return address SJP pushed (POP U), read the inline
 ; operands with LIN U and return with PSH U / RTN -- which leaves the
@@ -30,6 +36,8 @@
 fr_a:
 	.ds 1
 fr_n:
+	.ds 1
+fr_e:
 	.ds 1
 
 	.area CODE
@@ -50,6 +58,15 @@ __lh5801_fsave:
 	psh	a
 	dec	xl
 	bzr	00101$
+	lin	u
+	sta	xl
+	ani	a, #0xff
+	bzs	00104$
+00103$:
+	psh	a
+	dec	xl
+	bzr	00103$
+00104$:
 	psh	u
 	rtn
 
@@ -62,6 +79,16 @@ __lh5801_frest:
 	sta	yl
 	lin	u
 	sta	(fr_n)
+	lin	u
+	sta	(fr_e)
+	ani	a, #0xff
+	bzs	00102$
+00105$:
+	pop	a
+	lda	(fr_e)
+	dec	a
+	sta	(fr_e)
+	bzr	00105$
 00102$:
 	pop	a
 	sde	y
