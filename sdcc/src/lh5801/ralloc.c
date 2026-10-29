@@ -358,6 +358,113 @@ markMemUpdates (ebbIndex *ebbi)
 }
 
 /*-----------------------------------------------------------------*/
+/* planSlots - which locals of a reentrant function get a stack slot */
+/*                                                                   */
+/* A reentrant function's locals are static (collectFrameSave(),     */
+/* gen.c), so a pointer to one reaches whichever activation is       */
+/* running: `f (a - 1, &x)` and the callee's `*y` read the callee's  */
+/* own x. A local that a pointer can reach -- its address taken, or  */
+/* an aggregate -- gets a real place on the stack too, which `&x`    */
+/* gives. If it is used only through that address it has no shadow;  */
+/* otherwise the shadow stays what every other use reads, and gen.c's */
+/* slotSync() copies it into the slot before anything that can go     */
+/* through a pointer (a call, a pointer read or write) and back after  */
+/* a call or a pointer write. Only when the function calls something:  */
+/* otherwise no other activation can run while it does.                */
+/*-----------------------------------------------------------------*/
+lh5801_slot *lh5801_slots;
+int lh5801_nSlots;
+int lh5801_slotSize;
+symbol *lh5801_frameBase;
+
+static bool
+slotOnly (const symbol *sym)
+{
+  int i;
+
+  for (i = 0; i < lh5801_nSlots; i++)
+    if (lh5801_slots[i].sym == sym)
+      return !lh5801_slots[i].synced;
+  return false;
+}
+
+static void
+addSlot (symbol *sym, bool synced)
+{
+  lh5801_slots = Safe_realloc (lh5801_slots, (lh5801_nSlots + 1) * sizeof (*lh5801_slots));
+  lh5801_slots[lh5801_nSlots].sym = sym;
+  lh5801_slots[lh5801_nSlots].offset = lh5801_slotSize;
+  lh5801_slots[lh5801_nSlots].synced = synced;
+  lh5801_nSlots++;
+  lh5801_slotSize += getSize (sym->type);
+}
+
+static void
+planSlots (ebbIndex *ebbi)
+{
+  set *cands = NULL, *direct = NULL;
+  bool calls = false;
+  symbol *sym;
+  int k, pass;
+
+  lh5801_nSlots = 0;
+  lh5801_slotSize = 0;
+  lh5801_frameBase = NULL;
+  if (!currFunc || !IFFUNC_ISREENT (currFunc->type) || IFFUNC_HASVARARGS (currFunc->type))
+    return;
+
+  for (k = 0; k < ebbi->count; k++)
+    {
+      iCode *ic;
+
+      for (ic = ebbi->bbOrder[k]->sch; ic; ic = ic->next)
+        {
+          operand *ops[3] = {IC_LEFT (ic), IC_RIGHT (ic), IC_RESULT (ic)};
+          int j;
+
+          if (ic->op == CALL || ic->op == PCALL)
+            calls = true;
+          if (SKIP_IC2 (ic))
+            continue;
+          for (j = 0; j < 3; j++)
+            {
+              if (!ops[j] || !IS_TRUE_SYMOP (ops[j]))
+                continue;
+              sym = OP_SYMBOL (ops[j]);
+              if (!sym->onStack || sym->localof != currFunc || !strcmp (sym->name, "__va_start") ||
+                  !(sym->addrtaken || IS_AGGREGATE (sym->type)))
+                continue;
+              if (!isinSet (cands, sym))
+                addSet (&cands, sym);
+              /* a parameter arrives in its shadow (genFunction()) */
+              if ((ic->op != ADDRESS_OF || j != 0 || sym->_isparm) && !isinSet (direct, sym))
+                addSet (&direct, sym);
+            }
+        }
+    }
+
+  /* the mirrored ones first: slotSync() walks them in one pass */
+  if (calls)
+    for (pass = 0; pass < 2; pass++)
+      for (sym = setFirstItem (cands); sym; sym = setNextItem (cands))
+        if (isinSet (direct, sym) == !pass)
+          addSlot (sym, !pass);
+  deleteSet (&cands);
+  deleteSet (&direct);
+
+  if (!lh5801_nSlots)
+    return;
+  wassertl (lh5801_slotSize <= 0xFF, "lh5801: a reentrant function's stack slots are over 255 bytes");
+
+  /* each activation's own slot address, saved across its calls */
+  sym = newSymbol ("__lh5801_fb", 1);
+  sym->type = newIntLink ();
+  sym->etype = getSpec (sym->type);
+  createStaticSpil (sym);
+  lh5801_frameBase = sym->usl.spillLoc;
+}
+
+/*-----------------------------------------------------------------*/
 /* lh5801_assignRegisters - phase-1 entry point: spill everything, */
 /* then generate code                                              */
 /*-----------------------------------------------------------------*/
@@ -385,10 +492,14 @@ lh5801_assignRegisters (ebbIndex *ebbi)
         createStaticSpil (psym);
     }
 
+  planSlots (ebbi);
+
   /* Its true locals (arrays, volatiles, anything whose address is taken)
      were put on the stack too, at offsets below the frame nothing here
      can reach: they get a shadow the same way, and the shadow is all
-     there is. (gen.c's collectFrameSave() saves them for recursion.) */
+     there is (gen.c's collectFrameSave() saves them for recursion) --
+     except a stack slot's, which the shadow then only mirrors, and a
+     slot-only one, which has none. */
   for (k = 0; k < ebbi->count; k++)
     {
       iCode *ic;
@@ -406,7 +517,7 @@ lh5801_assignRegisters (ebbIndex *ebbi)
                 continue;
               sym = OP_SYMBOL (ops[j]);
               if (sym->onStack && !sym->_isparm && !sym->isspilt && sym->localof == currFunc &&
-                  strcmp (sym->name, "__va_start"))
+                  strcmp (sym->name, "__va_start") && !slotOnly (sym))
                 createStaticSpil (sym);
             }
         }
@@ -420,8 +531,9 @@ lh5801_assignRegisters (ebbIndex *ebbi)
      what it can in registers; every other iTemp still gets a static spill
      location below. For now it's only offered iTemps of one or two bytes
      -- see ralloc2.cc's inst_sane() for what gen.c can keep in a
-     register. */
-  if (!lh5801_oldralloc)
+     register. Not in a function with stack slots: gen.c's slotSync()
+     between iCodes uses X, so nothing may stay in a register there. */
+  if (!lh5801_oldralloc && !lh5801_nSlots)
     {
       for (sym = hTabFirstItem (liveRanges, &k); sym; sym = hTabNextItem (liveRanges, &k))
         {

@@ -678,6 +678,72 @@ loadStackAddrToX (long stackOffset)
   emit ("sta", "xh");
 }
 
+/* The stack slot of `sym` (ralloc.c's planSlots()), or NULL. */
+static const lh5801_slot *
+findSlot (const symbol *sym)
+{
+  int i;
+
+  for (i = 0; i < lh5801_nSlots; i++)
+    if (lh5801_slots[i].sym == sym)
+      return &lh5801_slots[i];
+  return NULL;
+}
+
+/* Copies the mirrored locals' shadows into their stack slots (toSlot) or
+   back, all but `except` -- a call's result, which is newer than its
+   slot. They are the first slots, in order, so X walks them once. */
+static void
+slotSync (bool toSlot, const symbol *except)
+{
+  int i, j;
+
+  if (!lh5801_nSlots || !lh5801_slots[0].synced)
+    return;
+
+  genLine.lineElement.isInline++;
+  emit ("lda", "(%s)", lh5801_frameBase->rname);
+  emit ("sta", "xh");
+  emit ("lda", "(%s + 1)", lh5801_frameBase->rname);
+  emit ("sta", "xl");
+  for (i = 0; i < lh5801_nSlots && lh5801_slots[i].synced; i++)
+    {
+      const symbol *sym = lh5801_slots[i].sym;
+      const char *shadow = sym->usl.spillLoc->rname;
+      int size = getSize (sym->type);
+
+      for (j = 0; j < size; j++)
+        if (sym == except)
+          emit ("inc", "x");
+        else if (toSlot)
+          {
+            emit ("lda", "(%s + %d)", shadow, j);
+            emit ("sin", "x");
+          }
+        else
+          {
+            emit ("lin", "x");
+            emit ("sta", "(%s + %d)", shadow, j);
+          }
+    }
+  genLine.lineElement.isInline--;
+}
+
+/* What can go through a pointer: a call (the callee) or a pointer
+   access -- slotSync() before it; and after one that can write. */
+static bool
+reachesSlots (const iCode *ic)
+{
+  return ic->op == CALL || ic->op == PCALL || ic->op == GET_VALUE_AT_ADDRESS ||
+         ic->op == IPUSH_VALUE_AT_ADDRESS || POINTER_SET (ic);
+}
+
+static bool
+writesSlots (const iCode *ic)
+{
+  return ic->op == CALL || ic->op == PCALL || POINTER_SET (ic);
+}
+
 /*-----------------------------------------------------------------*/
 /* genFunction - generate the prologue                             */
 /*                                                                   */
@@ -733,7 +799,19 @@ genFunction (const iCode *ic)
       emit ("sjp", "__lh5801_fsave");
       emit (".dw", "%s__saved", sym->rname);
       emit (".db", "0x%02x", lh5801_frameSaveSize);
+      emit (".db", "0x%02x", lh5801_slotSize);
       genLine.lineElement.isInline--;
+    }
+
+  /* the stack slots fsave just reserved start right above S */
+  if (lh5801_frameBase)
+    {
+      emit ("ldx", "s");
+      emit ("inc", "x");
+      emit ("lda", "xh");
+      emit ("sta", "(%s)", lh5801_frameBase->rname);
+      emit ("lda", "xl");
+      emit ("sta", "(%s + 1)", lh5801_frameBase->rname);
     }
 
   if (!anyOnStack)
@@ -777,6 +855,7 @@ genEndFunction (const iCode *ic)
       emit ("sjp", "__lh5801_frest");
       emit (".dw", "%s__saved + %d", currFunc->rname, lh5801_frameSaveSize - 1);
       emit (".db", "0x%02x", lh5801_frameSaveSize);
+      emit (".db", "0x%02x", lh5801_slotSize);
       genLine.lineElement.isInline--;
     }
   emit ("rtn", "");
@@ -1049,7 +1128,29 @@ genAddrOf (const iCode *ic)
      be the shadow's too, or a write through the pointer goes to the stack
      copy nobody reads again. (sprintf()'s `&buf` was exactly this: the
      output pointer advanced on the stack while `*buf = 0` used the
-     shadow, still at the start, and overwrote the first character.) */
+     shadow, still at the start, and overwrote the first character.)
+
+     One with a stack slot (planSlots(), ralloc.c), though, is reached
+     through the slot: this activation's frame base plus its offset. */
+  {
+    const lh5801_slot *slot = findSlot (sym);
+
+    if (slot)
+      {
+        aopOp (result);
+        wassertl (result->aop->size == 2, "lh5801: ADDRESS_OF result must be a 2-byte pointer");
+        emit ("lda", "(%s + 1)", lh5801_frameBase->rname);
+        emit ("rec", "");
+        emit ("adi", "a, #0x%02lx", (unsigned long) (slot->offset + offset));
+        storeA (result->aop, 1);
+        emit ("lda", "(%s)", lh5801_frameBase->rname);
+        emit ("adi", "a, #0x00");
+        storeA (result->aop, 0);
+        freeAsmop (result);
+        return;
+      }
+  }
+
   if (sym->onStack && sym->isspilt && sym->usl.spillLoc)
     sym = sym->usl.spillLoc;
   else if (sym->onStack)
@@ -4141,6 +4242,8 @@ collectFrameSave (iCode *lic)
       if (arg->sym && arg->sym->onStack && arg->sym->isspilt && arg->sym->usl.spillLoc)
         frameSaveAdd (arg->sym->usl.spillLoc);
   }
+  if (lh5801_frameBase)
+    frameSaveAdd (lh5801_frameBase);
   wassertl (lh5801_frameSaveSize <= 0xFF, "lh5801: a reentrant function's saved frame is over 255 bytes");
 }
 
@@ -4164,6 +4267,22 @@ genLH5801Code (iCode *lic)
       if (ic->generated)
         continue;
       ic->generated = 1;
+
+      /* stack slots (planSlots(), ralloc.c); a fused `s[k] op= c` is
+         generated at its load, its store with it. (Never before the
+         prologue sets the frame base, or a RECEIVE takes its register
+         parameter: neither is either.) */
+      if (lh5801_nSlots && (reachesSlots (ic) || lh5801_memUpdate (ic)))
+        {
+          bool write = writesSlots (ic) || lh5801_memUpdate (ic);
+
+          slotSync (true, NULL);
+          genIC (ic);
+          if (write)
+            slotSync (false, (ic->op == CALL || ic->op == PCALL) && IS_TRUE_SYMOP (IC_RESULT (ic)) ?
+                             OP_SYMBOL (IC_RESULT (ic)) : NULL);
+          continue;
+        }
       genIC (ic);
     }
 
