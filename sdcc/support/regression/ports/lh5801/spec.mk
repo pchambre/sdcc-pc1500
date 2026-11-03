@@ -15,7 +15,9 @@ EMU_INPUT =
 BUILD_LH5801 = $(top_srcdir)/support/scripts/build-lh5801.sh
 LOAD_ADDR = 0100
 
-SDCCFLAGS += -mlh5801 --less-pedantic -I$(top_srcdir) \
+# STACK_SIZE: what the gcc-torture tests size their arrays by (memcpy-1's
+# are 128K without it); 4K, a modest share of a 28K PC-1500.
+SDCCFLAGS += -mlh5801 --less-pedantic -DSTACK_SIZE=4096 -I$(top_srcdir) \
              -I$(top_srcdir)/device/include -I$(top_srcdir)/device/include/lh5801
 
 OBJEXT = .rel

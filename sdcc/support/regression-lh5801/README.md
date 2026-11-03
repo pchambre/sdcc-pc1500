@@ -33,6 +33,7 @@ without register allocation (every value in memory), the fallback. Every test is
 | elements | in-place `s[k] op= c`, `s[i] op= c`, `p->f op= c` and `x op= c`: carries, borrows, masks, an unchainable constant, a pointer still needed afterwards, post-increments that must not fuse |
 | overlay | overlaid locals survive call chains, calls as arguments, calls through pointers (taken by name or from an initializer) and recursion |
 | init | zeroed and initialized globals, static locals, const tables, rand()'s seed |
+| heap | malloc, calloc, realloc, free on the default 1K heap: no overlap, contents kept, space back after free, NULL when too big; sprintf into a block |
 | exitret | exit() from inside nested calls returns to BASIC |
 | library | keyWait/keyScan, lcdInputLine, lcdSetCursor, the 26-cell limit, beep, lcdInvert |
 | blackjack | the example game: 3:2 blackjack, split, double, push, end statistics |

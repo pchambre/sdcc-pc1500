@@ -4,7 +4,7 @@
 
 #include <testfwk.h>
 
-#ifndef PORT_HOST
+#if !defined(PORT_HOST) && !defined(__SDCC_lh5801) /* lh5801: no __interrupt, the PC-1500's ROM owns the vectors */
 
 void
 foo (void)

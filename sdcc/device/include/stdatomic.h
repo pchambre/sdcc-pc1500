@@ -53,6 +53,17 @@ inline void atomic_flag_clear(volatile atomic_flag object[static 1])
 	object->flag = 1;
 }
 
+#elif defined(__SDCC_lh5801)
+
+/* 0 clear, 1 set; test-and-set with interrupts off (device/lib/lh5801) */
+#define ATOMIC_FLAG_INIT {0}
+
+__SDCC_ATOMIC_EXTERN
+inline void atomic_flag_clear(volatile atomic_flag object[static 1])
+{
+	object->flag = 0;
+}
+
 #else
 
 #error Support for atomic_flag not implemented

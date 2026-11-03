@@ -774,6 +774,17 @@ genFunction (const iCode *ic)
   emit ("", "%s:", sym->rname);
   genLine.lineCurr->isLabel = 1;
 
+  /* A __critical function would have to keep the flags clear of its
+     parameters (A, X) on entry and its return value (A, X) on exit, with
+     no stack-relative addressing to reach them: not done. A __critical { }
+     block around its body does the same job (genCritical). */
+  if (IFFUNC_ISCRITICAL (sym->type) && !regalloc_dry_run)
+    {
+      fprintf (stderr, "%s:%d: error: lh5801: __critical functions aren't supported; "
+               "put the body in a __critical { } block\n", ic->filename, ic->lineno);
+      fatalError++;
+    }
+
   for (arg = FUNC_ARGS (sym->type); arg; arg = arg->next)
     if (arg->sym && arg->sym->onStack)
       {
@@ -3569,6 +3580,36 @@ genUnaryMinus (const iCode *ic)
 }
 
 /*-----------------------------------------------------------------*/
+/* genCritical - the start of a __critical { } block: the flags    */
+/* (IE among them) onto the stack, then interrupts off. The stack, */
+/* not a variable (SDCCicode.c's geniCodeCritical, as for hc08):   */
+/* nested or re-entered blocks each keep their own. A never holds a */
+/* value between iCodes here. isInline: no outlining a push into a  */
+/* subroutine of its own.                                           */
+/*-----------------------------------------------------------------*/
+static void
+genCritical (const iCode *ic)
+{
+  (void) ic;
+  genLine.lineElement.isInline++;
+  emit ("tta", "");
+  emit ("rie", "");
+  emit ("psh", "a");
+  genLine.lineElement.isInline--;
+}
+
+/* ...and its end: IE as it was, with the rest of the flags */
+static void
+genEndCritical (const iCode *ic)
+{
+  (void) ic;
+  genLine.lineElement.isInline++;
+  emit ("pop", "a");
+  emit ("att", "");
+  genLine.lineElement.isInline--;
+}
+
+/*-----------------------------------------------------------------*/
 /* genDummyRead - a volatile read whose value is thrown away         */
 /* ("(void) v;", an unused "if (v)"): each memory byte goes through  */
 /* A once, which never holds a live value (ralloc2.cc's unsafe_regs). */
@@ -4094,6 +4135,12 @@ genIC (iCode *ic)
       break;
     case DUMMY_READ_VOLATILE:
       genDummyRead (ic);
+      break;
+    case CRITICAL:
+      genCritical (ic);
+      break;
+    case ENDCRITICAL:
+      genEndCritical (ic);
       break;
     case INLINEASM:
       /* Never priced: ralloc2.cc costs it 0 and lets no value survive it. */

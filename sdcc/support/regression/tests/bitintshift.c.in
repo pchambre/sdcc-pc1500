@@ -38,7 +38,7 @@ typedef unsigned char counttype;
 #elif defined (__SDCC_mcs51) && defined(__SDCC_MODEL_SMALL)
 #define MAXWIDTH 48
 #else
-#define MAXWDITH 64
+#define MAXWIDTH 64
 #endif
 
 bitinttype setoperand0(void)
