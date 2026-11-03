@@ -333,6 +333,7 @@ lh5801_genInitStartup (FILE *of)
    reentrant keyword being recognized when C source uses it directly. */
 static char *lh5801_keywords[] = {
   "at",                         /* __at(addr): an equate, nothing allocated */
+  "critical",                   /* __critical { }: IE saved on the stack, interrupts off (gen.c genCritical) */
   "reentrant",
   NULL
 };

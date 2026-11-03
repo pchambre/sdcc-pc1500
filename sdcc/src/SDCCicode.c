@@ -4455,7 +4455,7 @@ geniCodeCritical (ast * tree, int lvl)
   operand *op = NULL;
   sym_link *type;
 
-  if (!options.stackAuto && !TARGET_HC08_LIKE && !TARGET_MOS6502_LIKE)
+  if (!options.stackAuto && !TARGET_HC08_LIKE && !TARGET_MOS6502_LIKE && !TARGET_IS_LH5801)
     {
       type = newLink (SPECIFIER);
       SPEC_VOLATILE (type) = 1;

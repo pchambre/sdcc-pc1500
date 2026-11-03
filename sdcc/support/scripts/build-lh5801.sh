@@ -257,6 +257,15 @@ write_lnk pass1 "HOME=$BASE_HEX"
 # used (a program runs on BASIC's own stack), emits no bytes, and sdld
 # keeps it at 0 whatever base it's given.
 LAYOUT=(HOME GSINIT GSFINAL CONST INITIALIZER CODE DATA INITIALIZED)
+# Any other area -- a named address space's (__addressmod), say -- goes in
+# RAM after INITIALIZED (2026-11-03): left unbased, sdld put bug-2995's
+# space_a/space_b at CODE's own address, and storing to them overwrote
+# code. Not SSEG (above), nor DSEG: 128 bytes with no symbol in them in
+# every program, kept where they were (at 0, unused).
+while read -r area; do
+  case " ${LAYOUT[*]} SSEG DSEG " in *" $area "*) continue ;; esac
+  LAYOUT+=("$area")
+done < <(awk '$NF ~ /^\(REL/ && $4 == "=" {print $1}' pass1.map)
 BASES=()
 addr=$BASE_DEC
 image_end=$addr

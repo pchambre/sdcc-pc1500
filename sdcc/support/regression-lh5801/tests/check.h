@@ -1,9 +1,11 @@
 /* check.h - the LH5801 regression tests' tiny harness.
 
    Each test is a program that runs its checks and then shows "OK", or
-   "FAIL n" for the first check n that failed, and stays there (run.sh's
-   pc1500runner script waits for "OK"). Inputs go through volatile
-   globals so SDCC can't fold a check away at compile time. */
+   "FAIL n" for the first check n that failed, until a key, then goes back
+   to BASIC (run.sh's pc1500runner script waits for "OK"; on a real
+   PC-1500, 2026-11-03, the result used to stay up for good). Inputs go
+   through volatile globals so SDCC can't fold a check away at compile
+   time. */
 
 #ifndef CHECK_H
 #define CHECK_H
@@ -12,8 +14,8 @@
 
 static void stay(void)
 {
-    for (;;)
-        idleTick();
+    keyWait();
+    exit(0);
 }
 
 static void failAt(unsigned char n)
