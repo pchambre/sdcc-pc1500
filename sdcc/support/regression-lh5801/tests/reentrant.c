@@ -141,6 +141,31 @@ static int selfAssign(int n) __reentrant
     return x;
 }
 
+/* A frame keeps only what is read after a call (2026-11-04). n and k are
+   read at the top of the loop, before the call -- but the loop comes back
+   there after it, so the deeper calls must not leave theirs behind. */
+static unsigned char loopParam(unsigned char n, unsigned char k) __reentrant
+{
+    unsigned char s = 0;
+
+    while (k--) {
+        s += n;
+        if (n)
+            s += loopParam(n - 1, 1);
+    }
+    return s;
+}
+
+/* x and d only before the call: not kept, the result still right */
+static int beforeOnly(int x, int d) __reentrant
+{
+    int y = x * 2;
+
+    if (d)
+        y += beforeOnly(x + 1, d - 1);
+    return y;
+}
+
 int main(void)
 {
     CHECK(1, fib(vn) == 55);
@@ -162,6 +187,8 @@ int main(void)
     CHECK(10, chainSum(5, 0) == 15);
     CHECK(11, structDepth(3, 0) == 130);
     CHECK(12, selfAssign(vn) == 21);
+    CHECK(13, loopParam(3, 2) == 12);
+    CHECK(14, beforeOnly(1, 2) == 12);
     pass();
     return 0;
 }
