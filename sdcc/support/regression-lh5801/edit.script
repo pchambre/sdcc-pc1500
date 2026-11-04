@@ -1,0 +1,41 @@
+# device/examples/lh5801/edit: type four lines, count, replace, sort, find,
+# go to a line, delete it, insert one, browse, quit -- the text buffer
+# checked byte for byte (each line ends in 0A).
+
+u:0*:60000 w:500 t:I k:ENT
+u:1::20000 w:300 t:PEAR k:ENT
+u:2::20000 w:300 t:APPLE k:ENT
+u:3::20000 w:300 t:FIG k:ENT
+u:4::20000 w:300 t:APPLE k:SPACE t:PIE k:ENT
+u:5::20000 w:300 k:ENT
+u:4*:20000 x:_lines:0004 x:_used:0019
+x:_text:504541520A4150504C450A4649470A4150504C45205049450A
+
+# C: 4 lines, 25 characters, 4071 free
+w:300 t:C k:ENT u:4_LINES_25_CH_4071_FREE:20000 w:300 k:ENT
+
+# R: both APPLEs, the line lengths changing in place
+u:4*:20000 w:300 t:R/APPLE/PLUM k:ENT u:2_CHANGES:20000 x:_changes:0002 w:300 k:ENT
+u:4*:20000 x:_text:504541520A504C554D0A4649470A504C554D205049450A x:_used:0017
+
+# S: FIG PEAR PLUM "PLUM PIE" (a prefix sorts first)
+w:300 t:S k:ENT u:1*:20000
+x:_text:4649470A504541520A504C554D0A504C554D205049450A
+
+# F/PIE: line 4; then 2, and ENTER alone shows the next line
+w:300 t:F/PIE k:ENT u:4_PLUM_PIE:20000 w:300 k:ENT
+u:4*:20000 w:300 t:2 k:ENT u:2_PEAR:20000 w:300 k:ENT
+u:2*:20000 w:300 k:ENT u:3_PLUM:20000 w:300 k:ENT
+
+# D on line 3, then I KIWI before the new line 3 (PLUM PIE)
+u:3*:20000 w:300 t:D k:ENT w:1500 x:_lines:0003
+u:3*:20000 w:300 t:I k:ENT u:3::20000 w:300 t:KIWI k:ENT
+u:4::20000 w:300 k:ENT u:4*:20000
+x:_text:4649470A504541520A4B4957490A504C554D205049450A x:_used:0017
+
+# L: browse from line 4 up two, then back to the prompt at line 2
+w:300 t:L k:ENT u:4_PLUM_PIE:20000 w:300 k:UP u:3_KIWI:20000 w:300 k:UP
+u:2_PEAR:20000 w:300 k:CL u:2*:20000 x:_cur:0002
+
+# Q: back to BASIC
+w:300 t:Q k:ENT w:1500 u:>:20000

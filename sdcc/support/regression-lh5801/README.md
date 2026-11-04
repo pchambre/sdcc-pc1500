@@ -1,7 +1,7 @@
 # LH5801 regression tests
 
-Self-checking C programs run on an emulated PC-1500, plus the Blackjack
-example played with stacked decks. Each test shows `OK` or `FAIL n` (the
+Self-checking C programs run on an emulated PC-1500, plus the example
+programs (Blackjack with stacked decks, LANDER, EDIT) played by script. Each test shows `OK` or `FAIL n` (the
 first failed check, see `tests/check.h`); tests that need keys have a
 `tests/<name>.script` for [pc1500runner](https://github.com/pchambre/pc1500emu)
 (`tools/runner` in pc1500emu, which documents the script language).
@@ -37,6 +37,8 @@ without register allocation (every value in memory), the fallback. Every test is
 | exitret | exit() from inside nested calls returns to BASIC |
 | library | keyWait/keyScan, lcdInputLine, lcdSetCursor, the 26-cell limit, beep, lcdInvert |
 | blackjack | the example game: 3:2 blackjack, split, double, push, end statistics |
+| lander | the example game: float physics, sqrtf, sprintf; a perfect Moon landing and an Io crash, checked to the tenth |
+| edit | the example line editor: insert, count, replace (lines growing and shrinking), sort, find, delete, browse; the buffer checked byte for byte |
 
 `src/lh5801/test_smoke.py` separately checks the exact linked bytes of a
 minimal program (startup included).
