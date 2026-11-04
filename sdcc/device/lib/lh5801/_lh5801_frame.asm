@@ -35,9 +35,9 @@
 	.area DATA
 fr_a:
 	.ds 1
-fr_n:
+fr_xh:
 	.ds 1
-fr_e:
+fr_xl:
 	.ds 1
 
 	.area CODE
@@ -70,32 +70,41 @@ __lh5801_fsave:
 	psh	u
 	rtn
 
+; The return value's A and X wait in memory, so XL can count both loops
+; (2026-11-04: counting in memory was 1.7 times fsave's time).
 __lh5801_frest:
 	sta	(fr_a)
+	lda	xh
+	sta	(fr_xh)
+	lda	xl
+	sta	(fr_xl)
 	pop	u
 	lin	u
 	sta	yh
 	lin	u
 	sta	yl
 	lin	u
-	sta	(fr_n)
+	sta	xh			; n
 	lin	u
-	sta	(fr_e)
+	sta	xl			; slots
 	ani	a, #0xff
 	bzs	00102$
 00105$:
 	pop	a
-	lda	(fr_e)
-	dec	a
-	sta	(fr_e)
+	dec	xl
 	bzr	00105$
 00102$:
+	lda	xh
+	sta	xl
+00103$:
 	pop	a
 	sde	y
-	lda	(fr_n)
-	dec	a
-	sta	(fr_n)
-	bzr	00102$
+	dec	xl
+	bzr	00103$
 	psh	u
+	lda	(fr_xh)
+	sta	xh
+	lda	(fr_xl)
+	sta	xl
 	lda	(fr_a)
 	rtn
