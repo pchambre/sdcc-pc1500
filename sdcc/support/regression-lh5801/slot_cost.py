@@ -36,7 +36,7 @@ assert base is not None
 addrs = sorted(set(syms.values()))
 def span(s):
     a = syms[s]; nxt = min([x for x in addrs if x > a] or [a + 64]); return a, nxt
-helpers = {s: span(s) for s in ('__lh5801_fsave', '__lh5801_frest')}
+helpers = {s: span(s) for s in ('__lh5801_fsave', '__lh5801_frest') if s in syms}  # none: all in line, or none saved
 # the call sites' inline operands: 4 data bytes after each sjp
 size = {'slot': 0, 'call': 0, 'body': 0}; cyc = {'slot': 0, 'call': 0, 'body': 0}
 perf = {}

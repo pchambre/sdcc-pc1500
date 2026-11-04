@@ -4272,18 +4272,141 @@ drylh5801iCode (iCode *ic)
 /* to a local still reaches whichever activation is running.          */
 /*-----------------------------------------------------------------*/
 static void
-frameSaveAdd (symbol *sym)
+frameSaveAdd (symbol *sym, const char *why, const symbol *of)
 {
   if (isinSet (lh5801_frameSave, sym))
     return;
   addSet (&lh5801_frameSave, sym);
   lh5801_frameSaveSize += getSize (sym->type);
+  if (getenv ("LH5801_MARK") && !regalloc_dry_run)   /* measuring: what a frame holds */
+    fprintf (stderr, "lh5801 frame %s: %s %d B, %s %s\n", currFunc->name, sym->rname,
+             getSize (sym->type), why, of ? of->name : "");
+}
+
+/* The function's flow, for collectFrameSave(): its iCodes in order, and
+   what each can be followed by -- the next one, unless it jumps
+   (GOTO, JUMPTABLE), and the labels it may jump to. */
+static iCode **fsIc;
+static int fsN;
+
+static int
+fsLabel (const symbol *label)
+{
+  int i;
+
+  for (i = 0; i < fsN; i++)
+    if (fsIc[i]->op == LABEL && IC_LABEL (fsIc[i]) == label)
+      return i;
+  return -1;
+}
+
+/* Marks in `seen` every iCode reachable from iCode `from` -- not `from`
+   itself, unless a loop comes back to it. */
+static bitVect *
+fsReach (int from)
+{
+  bitVect *seen = newBitVect (fsN);
+  int *stack = Safe_alloc (sizeof (int) * (fsN + 1));
+  int sp = 0;
+
+  stack[sp++] = from;
+  while (sp)
+    {
+      int i = stack[--sp];
+      const iCode *ic = fsIc[i];
+      int succ[2], ns = 0, k;
+
+      if (ic->op != GOTO && ic->op != JUMPTABLE && ic->op != ENDFUNCTION && i + 1 < fsN)
+        succ[ns++] = i + 1;
+      if (ic->op == GOTO)
+        succ[ns++] = fsLabel (IC_LABEL (ic));
+      else if (ic->op == IFX)
+        succ[ns++] = fsLabel (IC_TRUE (ic) ? IC_TRUE (ic) : IC_FALSE (ic));
+      else if (ic->op == JUMPTABLE)
+        {
+          symbol *l;
+
+          for (l = setFirstItem (IC_JTLABELS (ic)); l; l = setNextItem (IC_JTLABELS (ic)))
+            {
+              int j = fsLabel (l);
+
+              if (j >= 0 && !bitVectBitValue (seen, j))
+                {
+                  seen = bitVectSetBit (seen, j);
+                  stack[sp++] = j;
+                }
+            }
+        }
+      for (k = 0; k < ns; k++)
+        {
+          int j = succ[k];
+
+          if (j < 0)            /* a label not in this function: assume anything */
+            {
+              for (j = 0; j < fsN; j++)
+                seen = bitVectSetBit (seen, j);
+              Safe_free (stack);
+              return seen;
+            }
+          if (!bitVectBitValue (seen, j))
+            {
+              seen = bitVectSetBit (seen, j);
+              stack[sp++] = j;
+            }
+        }
+      if (sp > fsN - 1)
+        stack = Safe_realloc (stack, sizeof (int) * (sp + fsN + 1));
+    }
+  Safe_free (stack);
+  return seen;
+}
+
+static bool
+fsOpIs (const operand *op, const symbol *sym)
+{
+  return op && IS_SYMOP (op) && OP_SYMBOL_CONST (op) == sym;
+}
+
+/* reads `sym`: an operand, the condition of an IFX or JUMPTABLE (IC_LEFT
+   too), or the address a pointer store writes through */
+static bool
+fsReads (const iCode *ic, const symbol *sym)
+{
+  if (ic->op == GOTO || ic->op == LABEL || ic->op == FUNCTION || ic->op == ENDFUNCTION)
+    return false;
+  return fsOpIs (IC_LEFT (ic), sym) || fsOpIs (IC_RIGHT (ic), sym) ||
+         (POINTER_SET (ic) && fsOpIs (IC_RESULT (ic), sym));
+}
+
+/* whether an iCode in `may` reads `sym` -- or its address is taken: then
+   anything may, through the pointer */
+static bool
+fsReadAfter (const symbol *sym, const bitVect *may)
+{
+  int i;
+
+  if (sym->addrtaken)
+    return true;
+  for (i = 0; i < fsN; i++)
+    if (bitVectBitValue (may, i) && fsReads (fsIc[i], sym))
+      return true;
+  return false;
+}
+
+static bool
+fsWrites (const iCode *ic, const symbol *sym)
+{
+  return ic->op != IFX && ic->op != JUMPTABLE && ic->op != GOTO && ic->op != LABEL &&
+         !POINTER_SET (ic) && fsOpIs (IC_RESULT (ic), sym);
 }
 
 static void
 collectFrameSave (iCode *lic)
 {
   iCode *ic, *call;
+  bitVect **after;      /* per call: what may run after it */
+  bitVect *afterAny;    /* ...after any call */
+  int i, n;
 
   deleteSet (&lh5801_frameSave);
   lh5801_frameSaveSize = 0;
@@ -4294,6 +4417,23 @@ collectFrameSave (iCode *lic)
       break;
   if (!call)
     return;
+
+  /* Only what an activation still reads after one of its calls needs
+     keeping from a deeper one (2026-11-04: parameters were all saved, and
+     temps whose live range merely spans a call's place in the code). */
+  for (fsN = 0, ic = lic; ic; ic = ic->next)
+    fsN++;
+  fsIc = Safe_alloc (sizeof (iCode *) * fsN);
+  for (n = 0, ic = lic; ic; ic = ic->next)
+    fsIc[n++] = ic;
+  after = Safe_alloc (sizeof (bitVect *) * fsN);
+  afterAny = newBitVect (fsN);
+  for (i = 0; i < fsN; i++)
+    if (fsIc[i]->op == CALL || fsIc[i]->op == PCALL)
+      {
+        after[i] = fsReach (i);
+        afterAny = bitVectUnion (afterAny, after[i]);
+      }
 
   for (ic = lic; ic; ic = ic->next)
     {
@@ -4316,16 +4456,36 @@ collectFrameSave (iCode *lic)
             continue;
           if (!sym->isitmp)
             {
-              if (sym->onStack)
-                frameSaveAdd (sym->usl.spillLoc);
+              if (sym->onStack && fsReadAfter (sym, afterAny))
+                frameSaveAdd (sym->usl.spillLoc, "on-stack symbol", sym);
               continue;
             }
-          for (call = lic; call; call = call->next)
-            if ((call->op == CALL || call->op == PCALL) && sym->liveFrom < call->seq && sym->liveTo > call->seq)
-              {
-                frameSaveAdd (sym->usl.spillLoc);
-                break;
-              }
+          for (i = 0; i < fsN; i++)
+            {
+              int d;
+
+              call = fsIc[i];
+              if ((call->op != CALL && call->op != PCALL) || sym->liveFrom >= call->seq || sym->liveTo <= call->seq)
+                continue;
+              /* and on a path: written before the call, read after it */
+              if (!fsReadAfter (sym, after[i]))
+                continue;
+              for (d = 0; d < fsN; d++)
+                if (fsWrites (fsIc[d], sym))
+                  {
+                    bitVect *r = fsReach (d);
+                    bool reaches = bitVectBitValue (r, i);
+
+                    freeBitVect (r);
+                    if (reaches)
+                      break;
+                  }
+              if (d < fsN || sym->_isparm)
+                {
+                  frameSaveAdd (sym->usl.spillLoc, "temp live across a call", sym);
+                  break;
+                }
+            }
         }
     }
   /* parameters nothing reads still arrive in their shadows */
@@ -4333,11 +4493,19 @@ collectFrameSave (iCode *lic)
     value *arg;
 
     for (arg = FUNC_ARGS (currFunc->type); arg; arg = arg->next)
-      if (arg->sym && arg->sym->onStack && arg->sym->isspilt && arg->sym->usl.spillLoc)
-        frameSaveAdd (arg->sym->usl.spillLoc);
+      if (arg->sym && arg->sym->onStack && arg->sym->isspilt && arg->sym->usl.spillLoc &&
+          fsReadAfter (arg->sym, afterAny))
+        frameSaveAdd (arg->sym->usl.spillLoc, "parameter", arg->sym);
   }
+  for (i = 0; i < fsN; i++)
+    if (after[i])
+      freeBitVect (after[i]);
+  Safe_free (after);
+  freeBitVect (afterAny);
+  Safe_free (fsIc);
+  fsIc = NULL;
   if (lh5801_frameBase)
-    frameSaveAdd (lh5801_frameBase);
+    frameSaveAdd (lh5801_frameBase, "frame base", NULL);
   wassertl (lh5801_frameSaveSize <= 0xFF, "lh5801: a reentrant function's saved frame is over 255 bytes");
 }
 
