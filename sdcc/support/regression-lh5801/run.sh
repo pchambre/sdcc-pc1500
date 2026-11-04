@@ -1,11 +1,12 @@
 #!/bin/bash
 # run.sh - the LH5801 port's regression tests: build every tests/*.c (and
-# the Blackjack example) with build-lh5801.sh, run each on an emulated
+# the example programs that have a <name>.script here: Blackjack, LANDER,
+# EDIT) with build-lh5801.sh, run each on an emulated
 # PC-1500 with pc1500runner, and print pass/fail and a size table.
 #
 # Paul Chambre, 2026
 #
-# Usage: run.sh [test ...]      (names without .c; default: all, plus blackjack)
+# Usage: run.sh [test ...]      (names without .c; default: all, plus the examples)
 #
 # Needs:
 #   PC1500RUNNER  pc1500runner, from pc1500emu's tools/runner (a Windows
@@ -23,7 +24,7 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SDCC_ROOT="$(cd "$HERE/../.." && pwd)"
 BUILD="$SDCC_ROOT/support/scripts/build-lh5801.sh"
-BLACKJACK="$SDCC_ROOT/device/examples/lh5801/blackjack/blackjack.c"
+EXAMPLES="$SDCC_ROOT/device/examples/lh5801"
 LOAD=00C5
 
 : "${PC1500RUNNER:?set PC1500RUNNER to pc1500runner (pc1500emu tools/runner)}"
@@ -42,7 +43,11 @@ if [ $# -gt 0 ]; then
 else
   TESTS=()
   for f in "$HERE"/tests/*.c; do TESTS+=("$(basename "$f" .c)"); done
-  TESTS+=(blackjack)
+  # the example programs with a script here: device/examples/lh5801/<name>/<name>.c
+  for f in "$HERE"/*.script; do
+    n="$(basename "$f" .script)"
+    [ -f "$EXAMPLES/$n/$n.c" ] && TESTS+=("$n")
+  done
 fi
 
 WORK="$(mktemp -d)"
@@ -51,9 +56,9 @@ trap 'rm -rf "$WORK"' EXIT
 failed=0
 printf '%-12s %-6s %8s %8s\n' test result image ram
 for t in "${TESTS[@]}"; do
-  if [ "$t" = blackjack ]; then
-    src="$BLACKJACK"
-    script="$HERE/blackjack.script"
+  if [ -f "$EXAMPLES/$t/$t.c" ] && [ -f "$HERE/$t.script" ]; then
+    src="$EXAMPLES/$t/$t.c"
+    script="$HERE/$t.script"
   else
     src="$HERE/tests/$t.c"
     script="$HERE/tests/$t.script"
