@@ -76,9 +76,10 @@ LIB_NAME="pc1500"
 # SDCC's generic C library: every source in device/lib/incl.mk's COMMON_*
 # lists (what every port's library is built from), compiled the way
 # device/lib/Makefile does -- sdcc doesn't pull these in on its own. All
-# compile and assemble with this backend. Not the ones the port has in
-# assembler: device/lib/lh5801/string_*.asm, on TIN/SIN/LIN/CIN.
-RUNTIME_EXCLUDE=" _memset "
+# compile and assemble with this backend. Not the ones the port has its
+# own of: device/lib/lh5801/string_*.asm, on TIN/SIN/LIN/CIN, and
+# printf_large.c (the same formatting in less code).
+RUNTIME_EXCLUDE=" _memset printf_large "
 # plus the ones device/lib/Makefile has each port choose (its SOURCES_*
 # lists): integer and long long arithmetic, conversions, heap, stdio
 RUNTIME_SOURCES=(
