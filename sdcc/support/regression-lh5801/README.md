@@ -57,3 +57,18 @@ Image bytes at the start of the register-allocator work (2026-10-27):
 | library | 2048 | 2273 |
 | memory | 5019 | 6384 |
 | blackjack | 19140 | 20722 |
+
+## Profiling a regression-suite case
+
+`profile.sh <support/regression/cases/x.c>` builds one of SDCC's own
+regression cases as the suite does (after a suite run, for its gen/lh5801
+objects), runs it on pc1500sim with `-p` (cycles per address) and prints
+`slot_cost.py`'s split: stack-slot copies, the `__lh5801_fsave`/`frest`
+call sites and helpers, and the rest of the module, in bytes and cycles,
+per function. `SDCCFLAGS` passes extra options (`--opt-code-speed`).
+A frame saved in line (1 byte, or up to 4 with `--opt-code-speed`) counts
+as the function's own code.
+
+Measured 2026-11-04 over the 14 cases that save frames: the helpers took
+21-60% of a recursive function's time and stack slots under 7%; `frest`
+then counted its loops in memory (now in XL, -29%).

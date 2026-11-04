@@ -702,6 +702,8 @@ slotSync (bool toSlot, const symbol *except)
     return;
 
   genLine.lineElement.isInline++;
+  if (getenv ("LH5801_MARK"))    /* measuring (slot_cost.py): no code change */
+    emit (";", "@slot+");
   emit ("lda", "(%s)", lh5801_frameBase->rname);
   emit ("sta", "xh");
   emit ("lda", "(%s + 1)", lh5801_frameBase->rname);
@@ -726,6 +728,8 @@ slotSync (bool toSlot, const symbol *except)
             emit ("sta", "(%s + %d)", shadow, j);
           }
     }
+  if (getenv ("LH5801_MARK"))
+    emit (";", "@slot-");
   genLine.lineElement.isInline--;
 }
 
@@ -742,6 +746,18 @@ static bool
 writesSlots (const iCode *ic)
 {
   return ic->op == CALL || ic->op == PCALL || POINTER_SET (ic);
+}
+
+/* Whether the saved frame is pushed and popped in line instead of by
+   __lh5801_fsave/frest (2026-11-04): with no stack slots, LDA/PSH A per
+   byte at entry and POP A/STA at exit, 10 bytes a byte against the call
+   sites' 14 and the helpers' ~180 cycles a call -- smaller for one byte,
+   and up to four with --opt-code-speed. */
+static bool
+frameSaveInline (void)
+{
+  return lh5801_frameSaveSize && !lh5801_slotSize &&
+         lh5801_frameSaveSize <= (optimize.codeSpeed ? 4 : 1);
 }
 
 /*-----------------------------------------------------------------*/
@@ -804,7 +820,19 @@ genFunction (const iCode *ic)
   /* the caller's copy of the saved frame goes on the stack (after the
      frame pointer is taken: the parameters' offsets are from S at entry,
      and before the parameters' shadows, which are part of the frame) */
-  if (lh5801_frameSaveSize && !regalloc_dry_run)
+  if (frameSaveInline () && !regalloc_dry_run)
+    {
+      int i;
+
+      genLine.lineElement.isInline++;
+      for (i = 0; i < lh5801_frameSaveSize; i++)
+        {
+          emit ("lda", "(%s__saved + %d)", sym->rname, i);
+          emit ("psh", "a");
+        }
+      genLine.lineElement.isInline--;
+    }
+  else if (lh5801_frameSaveSize && !regalloc_dry_run)
     {
       genLine.lineElement.isInline++;
       emit ("sjp", "__lh5801_fsave");
@@ -860,7 +888,26 @@ genEndFunction (const iCode *ic)
 {
   /* back from the stack: the return value is in A, X and __lh5801_ret2..,
      which the helper leaves alone */
-  if (lh5801_frameSaveSize && !regalloc_dry_run)
+  if (frameSaveInline () && !regalloc_dry_run)
+    {
+      /* a 1-byte return value is in A: YL keeps it (a reentrant
+         function keeps no register for its caller) */
+      bool keepA = getSize (currFunc->type->next) == 1;
+      int i;
+
+      genLine.lineElement.isInline++;
+      if (keepA)
+        emit ("sta", "yl");
+      for (i = lh5801_frameSaveSize - 1; i >= 0; i--)
+        {
+          emit ("pop", "a");
+          emit ("sta", "(%s__saved + %d)", currFunc->rname, i);
+        }
+      if (keepA)
+        emit ("lda", "yl");
+      genLine.lineElement.isInline--;
+    }
+  else if (lh5801_frameSaveSize && !regalloc_dry_run)
     {
       genLine.lineElement.isInline++;
       emit ("sjp", "__lh5801_frest");
