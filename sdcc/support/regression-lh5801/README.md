@@ -26,6 +26,7 @@ without register allocation (every value in memory), the fallback. Every test is
 | compare | 16/32-bit compares, all six operators, as branches and values: against the largest literal, literals with zero low bytes, signed boundaries, variables (> and <= swap operands) |
 | long | the 32-bit helpers: copies, constant stores, add/sub in place, into a third variable and into the right operand, self-aliasing, shifts (signed, unsigned, in place, by bytes and bits), negation, registers live around them |
 | calls | mixed parameter sizes, 1/2/4-byte returns, nested calls, sprintf varargs |
+| printf | sprintf's conversions, flags, widths, precision and modifiers, its count, and generic printf_large.c's quirks (the port has its own, smaller printf_large.c) |
 | regparm | register parameters (first 1-byte in A, first 2-byte in X) in either order, with wider ones, as other calls' arguments, kept across the callee's own calls, unused |
 | preserve | values kept in Y/U across calls to functions of the module that leave them alone (directly or through their own calls), and not across ones that use them or call the library |
 | numeric | the ROM-number wrappers (pc1500.h): add, subtract, multiply, divide, square root, abs and STR$ on the real ROM |
