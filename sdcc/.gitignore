@@ -32,6 +32,8 @@ obj/
 # that lands next to whatever .c file was built, e.g. under
 # device/examples/lh5801/.
 *-pc1500.bin
+# and its SD-card copy (<BASENAME>.BIN, with the SDLOAD M header)
+/device/examples/lh5801/**/*.BIN
 /src/sdcc
 /src/SDCClex.c
 /src/SDCCy.c
