@@ -77,9 +77,13 @@ LIB_NAME="pc1500"
 # lists (what every port's library is built from), compiled the way
 # device/lib/Makefile does -- sdcc doesn't pull these in on its own. All
 # compile and assemble with this backend. Not the ones the port has its
-# own of: device/lib/lh5801/string_*.asm, on TIN/SIN/LIN/CIN, and
-# printf_large.c (the same formatting in less code).
-RUNTIME_EXCLUDE=" _memset printf_large "
+# own of: device/lib/lh5801/string_*.asm, on TIN/SIN/LIN/CIN,
+# printf_large.c (the same formatting in less code) and the float
+# arithmetic, comparisons, conversions and sqrtf in assembly
+# (_lh5801_fs.asm and the modules it lists).
+RUNTIME_EXCLUDE=" _memset printf_large _fsadd _fssub _fsmul _fsdiv _fslt _fseq _fsneq 
+  _fs2ulong _fs2slong _fs2uint _fs2sint _fs2uchar _fs2schar 
+  _ulong2fs _slong2fs _uint2fs _sint2fs _uchar2fs _schar2fs sqrtf "
 # plus the ones device/lib/Makefile has each port choose (its SOURCES_*
 # lists): integer and long long arithmetic, conversions, heap, stdio
 RUNTIME_SOURCES=(

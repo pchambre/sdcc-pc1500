@@ -1,61 +1,63 @@
 # device/examples/lh5801/lander: a perfect Moon landing, then a free fall
 # on Io. The burns were found with a model of lander.c's physics (single
 # precision, the same steps); its displays match the game's to the
-# tenth. A game second takes ~3.5 s of PC-1500 time (ten float steps), so
-# every burn waits 6 s for the next prompt.
+# tenth. A game second takes ~0.9 s of PC-1500 time (ten float steps; 3.5 s
+# with SDCC's generic float library), so every burn waits 2 s for the next
+# prompt.
 
 # Moon: 1000 m, 40 m/s down, 300 kg -- down at 0.9 m/s after 27 s, 98 kg left
 u:MOON:60000 w:500 k:1 w:1500
-u:B?:20000 t:3 k:ENT w:6000
-u:B?:20000 t:3 k:ENT w:6000
-u:B?:20000 t:3 k:ENT w:6000
-u:B?:20000 t:3 k:ENT w:6000
-u:B?:20000 t:3 k:ENT w:6000
-u:B?:20000 t:3 k:ENT w:6000
-u:B?:20000 t:3 k:ENT w:6000
-u:B?:20000 t:0 k:ENT w:6000
-u:B?:20000 t:0 k:ENT w:6000
-u:B?:20000 t:1 k:ENT w:6000
-u:B?:20000 t:0 k:ENT w:6000
-u:B?:20000 t:3 k:ENT w:6000
-u:B?:20000 t:3 k:ENT w:6000
-u:B?:20000 t:3 k:ENT w:6000
-u:B?:20000 t:3 k:ENT w:6000
-u:B?:20000 t:8 k:ENT w:6000
-u:B?:20000 t:14 k:ENT w:6000
-u:B?:20000 t:19 k:ENT w:6000
-u:B?:20000 t:19 k:ENT w:6000
-u:B?:20000 t:14 k:ENT w:6000
-u:B?:20000 t:4 k:ENT w:6000
-u:B?:20000 t:19 k:ENT w:6000
-u:B?:20000 t:19 k:ENT w:6000
-u:B?:20000 t:19 k:ENT w:6000
-u:B?:20000 t:7 k:ENT w:6000
-u:B?:20000 t:16 k:ENT w:6000
-u:B?:20000 t:11 k:ENT w:6000
+u:B?:20000 t:3 k:ENT w:2000
+u:B?:20000 t:3 k:ENT w:2000
+u:B?:20000 t:3 k:ENT w:2000
+u:B?:20000 t:3 k:ENT w:2000
+u:B?:20000 t:3 k:ENT w:2000
+u:B?:20000 t:3 k:ENT w:2000
+u:B?:20000 t:3 k:ENT w:2000
+u:B?:20000 t:0 k:ENT w:2000
+u:B?:20000 t:0 k:ENT w:2000
+u:B?:20000 t:1 k:ENT w:2000
+u:B?:20000 t:0 k:ENT w:2000
+u:B?:20000 t:3 k:ENT w:2000
+u:B?:20000 t:3 k:ENT w:2000
+u:B?:20000 t:3 k:ENT w:2000
+u:B?:20000 t:3 k:ENT w:2000
+u:B?:20000 t:8 k:ENT w:2000
+u:B?:20000 t:14 k:ENT w:2000
+u:B?:20000 t:19 k:ENT w:2000
+u:B?:20000 t:19 k:ENT w:2000
+u:B?:20000 t:14 k:ENT w:2000
+u:B?:20000 t:4 k:ENT w:2000
+u:B?:20000 t:19 k:ENT w:2000
+u:B?:20000 t:19 k:ENT w:2000
+u:B?:20000 t:19 k:ENT w:2000
+u:B?:20000 t:7 k:ENT w:2000
+u:B?:20000 t:16 k:ENT w:2000
+u:B?:20000 t:11 k:ENT w:2000
 u:PERFECT_0.9_M/S_27s:20000 x:_verdict:01
 k:ENT w:1000 u:SCORE_196__BEST_196:20000 x:_score:00C4 x:_best:00C4
 k:ENT w:1000 u:AGAIN:20000
 
 # Io: 600 m, 25 m/s, no burn (ENTER keeps the last, 0) -- 52.8 m/s after 16 s
 k:Y w:1500 u:IO:20000 w:500 k:3 w:1500
-u:B?:20000 t:0 k:ENT w:6000
-u:B?:20000 k:ENT w:6000
-u:B?:20000 k:ENT w:6000
-u:B?:20000 k:ENT w:6000
-u:B?:20000 k:ENT w:6000
-u:B?:20000 k:ENT w:6000
-u:B?:20000 k:ENT w:6000
-u:B?:20000 k:ENT w:6000
-u:B?:20000 k:ENT w:6000
-u:B?:20000 k:ENT w:6000
-u:B?:20000 k:ENT w:6000
-u:B?:20000 k:ENT w:6000
-u:B?:20000 k:ENT w:6000
-u:B?:20000 k:ENT w:6000
-u:B?:20000 k:ENT w:6000
-u:B?:20000 k:ENT w:6000
+u:B?:20000 t:0 k:ENT w:2000
+u:B?:20000 k:ENT w:2000
+u:B?:20000 k:ENT w:2000
+u:B?:20000 k:ENT w:2000
+u:B?:20000 k:ENT w:2000
+u:B?:20000 k:ENT w:2000
+u:B?:20000 k:ENT w:2000
+u:B?:20000 k:ENT w:2000
+u:B?:20000 k:ENT w:2000
+u:B?:20000 k:ENT w:2000
+u:B?:20000 k:ENT w:2000
+u:B?:20000 k:ENT w:2000
+u:B?:20000 k:ENT w:2000
+u:B?:20000 k:ENT w:2000
+u:B?:20000 k:ENT w:2000
+u:B?:20000 k:ENT w:2000
 u:CRASH_52.8_M/S_16s:20000 x:_verdict:04 x:_score:0000
-# 52.77^2/100 = 27.85 in single precision rounds down here
-k:ENT w:1000 u:CRATER_27.8_M_DEEP:20000
+# 52.773136^2/100 = 27.850039 in single precision: 27.9 (SDCC's generic
+# float library, before the port's own, rounded it to 27.8)
+k:ENT w:1000 u:CRATER_27.9_M_DEEP:20000
 k:ENT w:1000 u:AGAIN:20000 k:N w:1500 x:_best:00C4
