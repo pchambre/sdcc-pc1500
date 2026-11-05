@@ -148,7 +148,10 @@ can simply be run again. Its RAM includes uninitialized data after the
 image, so reserve it from BASIC first with `NEW &<address>`. The script
 prints that address, with the load address and image size. Load it at the
 bottom of user RAM: `40C5` on a machine with RAM from 4000H, or `00C5`
-with 16K at 0000H. See the script's own header comment for details.
+with 16K at 0000H. For the SD-card expansion module the script also
+writes `<NAME>.BIN` (the source's name, upper-cased, 8.3): the image after
+the 4-byte header `SDLOAD M` reads, so `SDLOAD M "<NAME>.BIN"` loads and
+starts it. See the script's own header comment for details.
 
 ### Building on Windows
 

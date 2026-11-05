@@ -21,7 +21,11 @@
 #                   (pc1500emu project) for the memory map this assumes.
 #
 # Output: <first_source_basename>-<base>-pc1500.bin (and its .map) in the
-# current directory. CALL it from BASIC at <base> itself: HOME (the
+# current directory, and the same image as an SD-card file for the
+# expansion module's SDLOAD M: <BASENAME>.BIN (the name upper-cased and cut
+# to 8.3), the image after a 4-byte header -- load address, then the
+# address SDLOAD M CALLs (the same), both big-endian. NEW first, then
+# SDLOAD M "<BASENAME>.BIN" loads and starts it. CALL it from BASIC at <base> itself: HOME (the
 # image's first area) holds the startup code's entry label, which falls
 # through into GSINIT -- zero DATA, copy INITIALIZER into INITIALIZED, run
 # every module's static initializers -- and then GSFINAL calls main() and
@@ -303,6 +307,9 @@ fi
 OUT="$OUTDIR/${BASENAME}-${BASE_HEX}-pc1500"
 cp pass2.bin "$OUT.bin"
 cp pass2.map "$OUT.map"
+SD_NAME="$(echo "${BASENAME:0:8}" | tr 'a-z' 'A-Z').BIN"
+SD_HDR="$(printf '\x%02X\x%02X' $(( BASE_DEC >> 8 )) $(( BASE_DEC & 255 )))"
+{ printf "$SD_HDR$SD_HDR"; cat "$OUT.bin"; } > "$OUTDIR/$SD_NAME"
 
 BIN_SIZE="$(stat -c%s "$OUT.bin" 2>/dev/null || stat -f%z "$OUT.bin")"
 echo "$OUT.bin"
@@ -312,3 +319,4 @@ echo "  image: $BIN_SIZE bytes at 0x$BASE_HEX-0x$(printf '%04X' $(( image_end - 
 # below it -- the program's RAM-only areas included, which the startup
 # code zeroes on every CALL.
 echo "  reserve it first with NEW &$(printf '%04X' "$ram_end") (before loading it)"
+echo "  SD card: $SD_NAME -- SDLOAD M \"$SD_NAME\" loads and starts it"
