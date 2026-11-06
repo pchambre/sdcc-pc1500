@@ -55,7 +55,7 @@ addr(struct expr *esp)
 			default:	esp->e_mode = S_IU1;	break;
 			}
 		} else {
-			expr(esp, 0);
+			expr(esp);
 			esp->e_mode = S_EXT1;
 		}
 		if (getnb() != ')') {
@@ -70,7 +70,7 @@ addr(struct expr *esp)
 			default:	esp->e_mode = S_IU;	break;
 			}
 		} else {
-			expr(esp, 0);
+			expr(esp);
 			esp->e_mode = S_EXT;
 		}
 		if (getnb() != ')') {

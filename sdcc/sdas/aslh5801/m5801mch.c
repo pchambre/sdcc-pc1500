@@ -136,7 +136,7 @@ machine(struct mne *mp)
 			}
 		}
 		comma(1);
-		expr(&e2, 0);
+		expr(&e2);
 		outrb(&e2, 0);
 		break;
 
@@ -153,7 +153,7 @@ machine(struct mne *mp)
 		default:	xerr('a', "Invalid Addressing Mode.");	break;
 		}
 		comma(1);
-		expr(&e2, 0);
+		expr(&e2);
 		outrb(&e2, 0);
 		break;
 
@@ -163,7 +163,7 @@ machine(struct mne *mp)
 			xerr('a', "Accumulator (A) Required.");
 		}
 		comma(1);
-		expr(&e2, 0);
+		expr(&e2);
 		outab(B0(op));
 		outrb(&e2, 0);
 		break;
@@ -190,35 +190,35 @@ machine(struct mne *mp)
 		switch (t1) {
 		case S_XL:
 			outab(B0(op));
-			comma(1); expr(&e2, 0); outrb(&e2, 0);
+			comma(1); expr(&e2); outrb(&e2, 0);
 			break;
 		case S_YL:
 			outab(B0(op) + 0x10);
-			comma(1); expr(&e2, 0); outrb(&e2, 0);
+			comma(1); expr(&e2); outrb(&e2, 0);
 			break;
 		case S_UL:
 			outab(B0(op) + 0x20);
-			comma(1); expr(&e2, 0); outrb(&e2, 0);
+			comma(1); expr(&e2); outrb(&e2, 0);
 			break;
 		case S_XH:
 			outab(B1(op));
-			comma(1); expr(&e2, 0); outrb(&e2, 0);
+			comma(1); expr(&e2); outrb(&e2, 0);
 			break;
 		case S_YH:
 			outab(B1(op) + 0x10);
-			comma(1); expr(&e2, 0); outrb(&e2, 0);
+			comma(1); expr(&e2); outrb(&e2, 0);
 			break;
 		case S_UH:
 			outab(B1(op) + 0x20);
-			comma(1); expr(&e2, 0); outrb(&e2, 0);
+			comma(1); expr(&e2); outrb(&e2, 0);
 			break;
 		case S_A:
 			outab(B2(op));
-			comma(1); expr(&e2, 0); outrb(&e2, 0);
+			comma(1); expr(&e2); outrb(&e2, 0);
 			break;
 		case S_S:
 			outab(B3(op));
-			comma(1); expr(&e2, 0); outrw(&e2, 0);
+			comma(1); expr(&e2); outrw(&e2, 0);
 			break;
 		default:
 			xerr('a', "Invalid Addressing Mode.");
@@ -311,7 +311,7 @@ machine(struct mne *mp)
 			xerr('a', "UL Required.");
 		}
 		comma(1);
-		expr(&e2, 0);
+		expr(&e2);
 		/*
 		 * dot.s_addr must be read here, before outab(0x88) advances
 		 * it -- same ordering S_TYPBRA above uses (its own expr()
@@ -336,7 +336,7 @@ machine(struct mne *mp)
 		break;
 
 	case S_TYPABS:
-		expr(&e1, 0);
+		expr(&e1);
 		outab(B0(op));
 		outrw(&e1, 0);
 		break;
@@ -361,7 +361,7 @@ machine(struct mne *mp)
 	 * rejected outright rather than silently mishandled.
 	 */
 	case S_TYPBRA:
-		expr(&e1, 0);
+		expr(&e1);
 		if (mchpcr(&e1)) {
 			v1 = (int) (e1.e_addr - dot.s_addr - 2);
 			if (v1 >= 0) {
@@ -390,12 +390,12 @@ machine(struct mne *mp)
 
 	case S_TYPVC:
 		outab(B0(op));
-		expr(&e1, 0);
+		expr(&e1);
 		outrb(&e1, 0);
 		break;
 
 	case S_TYPVEJ:
-		expr(&e1, 0);
+		expr(&e1);
 		if (e1.e_flag == 0 && e1.e_base.e_ap == NULL) {
 			v1 = (int) e1.e_addr;
 			if ((v1 < 0xC0) || (v1 > 0xF6) || (v1 & 1)) {
