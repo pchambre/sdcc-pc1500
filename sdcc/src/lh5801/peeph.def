@@ -68,49 +68,49 @@ replace restart {
 } if labelRefCountChange(%1 -1)
 
 // A jump to a label that is itself an unconditional jump goes straight
-// to the final target (labelIsUncondJump(): %5 the label, %6 where the
+// to the final target (label5IsUncondJumpTo6(): %5 the label, %6 where the
 // jump there goes). A conditional branch only if that's still in reach.
 replace restart {
 	jmp	%5
 } by {
 	; Peephole 4a - jumped to %6 directly instead of via %5
 	jmp	%6
-} if labelIsUncondJump(), notSame(%5 %6), labelRefCountChange(%5 -1), labelRefCountChange(%6 +1)
+} if label5IsUncondJumpTo6(), notSame(%5 %6), labelRefCountChange(%5 -1), labelRefCountChange(%6 +1)
 
 replace restart {
 	bch	%5
 } by {
 	; Peephole 4b - jumped to %6 directly instead of via %5
 	jmp	%6
-} if labelIsUncondJump(), notSame(%5 %6), labelRefCountChange(%5 -1), labelRefCountChange(%6 +1)
+} if label5IsUncondJumpTo6(), notSame(%5 %6), labelRefCountChange(%5 -1), labelRefCountChange(%6 +1)
 
 replace restart {
 	bzs	%5
 } by {
 	; Peephole 4c - branched to %6 directly instead of via %5
 	bzs	%6
-} if labelIsUncondJump(), notSame(%5 %6), labelInRange(%6), labelRefCountChange(%5 -1), labelRefCountChange(%6 +1)
+} if label5IsUncondJumpTo6(), notSame(%5 %6), labelInRange(%6), labelRefCountChange(%5 -1), labelRefCountChange(%6 +1)
 
 replace restart {
 	bzr	%5
 } by {
 	; Peephole 4d - branched to %6 directly instead of via %5
 	bzr	%6
-} if labelIsUncondJump(), notSame(%5 %6), labelInRange(%6), labelRefCountChange(%5 -1), labelRefCountChange(%6 +1)
+} if label5IsUncondJumpTo6(), notSame(%5 %6), labelInRange(%6), labelRefCountChange(%5 -1), labelRefCountChange(%6 +1)
 
 replace restart {
 	bcs	%5
 } by {
 	; Peephole 4e - branched to %6 directly instead of via %5
 	bcs	%6
-} if labelIsUncondJump(), notSame(%5 %6), labelInRange(%6), labelRefCountChange(%5 -1), labelRefCountChange(%6 +1)
+} if label5IsUncondJumpTo6(), notSame(%5 %6), labelInRange(%6), labelRefCountChange(%5 -1), labelRefCountChange(%6 +1)
 
 replace restart {
 	bcr	%5
 } by {
 	; Peephole 4f - branched to %6 directly instead of via %5
 	bcr	%6
-} if labelIsUncondJump(), notSame(%5 %6), labelInRange(%6), labelRefCountChange(%5 -1), labelRefCountChange(%6 +1)
+} if label5IsUncondJumpTo6(), notSame(%5 %6), labelInRange(%6), labelRefCountChange(%5 -1), labelRefCountChange(%6 +1)
 
 // A call right before the return is a tail call: jump there, and its RTN
 // returns for both (gen.c's recordPreservedRegs() reads such a JMP as a
