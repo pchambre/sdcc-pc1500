@@ -85,7 +85,7 @@ LIB_NAME="pc1500"
 # printf_large.c (the same formatting in less code) and the float
 # arithmetic, comparisons, conversions and sqrtf in assembly
 # (_lh5801_fs.asm and the modules it lists).
-RUNTIME_EXCLUDE=" _memset printf_large _fsadd _fssub _fsmul _fsdiv _fslt _fseq _fsneq 
+RUNTIME_EXCLUDE=" memset strcpy printf_large _fsadd _fssub _fsmul _fsdiv _fslt _fseq _fsneq 
   _fs2ulong _fs2slong _fs2uint _fs2sint _fs2uchar _fs2schar 
   _ulong2fs _slong2fs _uint2fs _sint2fs _uchar2fs _schar2fs sqrtf "
 # plus the ones device/lib/Makefile has each port choose (its SOURCES_*
@@ -96,7 +96,7 @@ RUNTIME_SOURCES=(
   _divuint _divsint _moduint _modsint _divulong
   _divslonglong _divulonglong _modslonglong _modulonglong
   _srulonglong _srslonglong _slulonglong _slslonglong
-  __itoa __ltoa _strcmp strnlen memcpy _memmove
+  __itoa __ltoa strnlen memcpy
   div ldiv lldiv imaxdiv vprintf sprintf
 )
 for f in $(sed -n '/^COMMON_[A-Z]* *=/,/^$/p' "$SDCC_ROOT/device/lib/incl.mk"); do
@@ -244,7 +244,7 @@ write_lnk() {  # write_lnk <name> <area=hex_base>...
   {
     echo "-muwx"
     echo "-i $name"
-    for b in "$@"; do echo "-b ${b%%=*} = 0x${b#*=}"; done
+    for b in "$@"; do echo "-a ${b%%=*} = 0x${b#*=}"; done
     for l in "${LIBS[@]+"${LIBS[@]}"}"; do
       echo "-k $(dirname "$l")"
       echo "-l $(basename "$l" .lib)"

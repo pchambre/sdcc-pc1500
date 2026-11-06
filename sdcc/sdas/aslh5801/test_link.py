@@ -84,7 +84,7 @@ def main():
                 sys.exit(1)
 
         rc, out, err = run(
-            [LINKER, "-mjxi", "-b", "_CODE=0x4000", "-b", "_DATA=0x4100",
+            [LINKER, "-mjxi", "-a", "_CODE=0x4000", "-a", "_DATA=0x4100",
              "-o", "out.ihx", "mod_b.rel", "mod_a.rel"],
             cwd=tmpdir)
         if rc != 0:

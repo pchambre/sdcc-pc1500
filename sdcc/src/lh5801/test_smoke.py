@@ -111,7 +111,7 @@ def main():
 
         link_cmd = [SDLD, "-mjxi"]
         for area, addr in AREA_BASES.items():
-            link_cmd += ["-b", f"{area}=0x{addr:04x}"]
+            link_cmd += ["-a", f"{area}=0x{addr:04x}"]
         link_cmd += ["-o", "smoke.ihx", "smoke.rel", "exit.rel"]
         rc, out, err = run(link_cmd, cwd=tmpdir)
         if rc != 0:
