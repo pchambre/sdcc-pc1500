@@ -475,6 +475,12 @@ EXCLUDE_ARCH_pdk += \
 	tst_bug-2767
 EXCLUDE_ds390 += \
 	tst_bug-2663
+# lh5801: locals are static unless reentrant, so a non-reentrant function
+# taking stack-passed arguments cannot be called through a pointer (error 92)
+EXCLUDE_lh5801 += \
+	tst_bug-2663 \
+	tst_gcc-torture-execute-func-ptr-1 \
+	tst_gcc-torture-execute-struct-ret-1
 
 # reentrancy
 EXCLUDE_ARCH_pdk += \
@@ -493,6 +499,7 @@ EXCLUDE_ARCH_f8 += ${EXCLUDE_nosfr}
 EXCLUDE_stm8 += ${EXCLUDE_nosfr}
 EXCLUDE_stm8-large += ${EXCLUDE_nosfr}
 EXCLUDE_tlcs90 += ${EXCLUDE_nosfr}
+EXCLUDE_lh5801 += ${EXCLUDE_nosfr}
 
 # target does not support __critical
 EXCLUDE_nocritical = \
