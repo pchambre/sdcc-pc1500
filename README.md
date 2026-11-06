@@ -10,7 +10,8 @@ Forked from **SDCC 4.6.2** (a post-4.6.0 development snapshot). Everything
 specific to this fork lives under [`sdcc/`](sdcc/), which is otherwise a
 normal SDCC checkout — see [`sdcc/doc/README.txt`](sdcc/doc/README.txt)
 for upstream SDCC's own documentation. This README covers only what's
-different here.
+different here; [LH5801.md](LH5801.md) is the guide to writing PC-1500
+programs with it.
 
 ## What's added
 
@@ -205,20 +206,16 @@ target yourself:
 
 ## Status
 
-Early-stage. Core language features and a real ROM-calling standard
-library subset work and are tested against real ROM images. Two numeric
-paths are being developed in parallel:
+C works: SDCC's own regression suite passes on the port (the few tests
+that need `__sfr`, `__interrupt` or pointer calls with stack arguments to
+non-reentrant functions are skipped for it), as do the port's own tests and
+three real programs (Blackjack, LANDER, EDIT), all on pc1500emu; Blackjack
+and LANDER also on a real PC-1500. `float` is IEEE single precision from
+the port's own assembly library; the ROM's BCD numbers are there too
+(`pc1500.h`). Blackjack fits a PC-1500 with an 8K RAM card.
 
-- A **PC-1500-native numeric library** (`pc1500Add`/`pc1500Sqrt`/etc. in
-  `pc1500.h`) calling the ROM's own 8-byte BCD floating-point routines
-  directly — complete and verified against a real ROM image.
-- Native C `float` support, bringing up SDCC's portable software float
-  library (`_fsadd.c`, `_fsmul.c`, etc.) file by file — addition and
-  32-bit multiply are verified correct end to end; multiplication of
-  `float` values themselves is still being debugged.
-
-See `sdcc/src/lh5801/gen.c` and recent commit history for the current
-state.
+See [LH5801.md](LH5801.md) for writing programs: memory, the stack, the
+calling convention, the library and its limits.
 
 ## Companion project
 
