@@ -506,6 +506,10 @@ EXCLUDE_nocritical = \
 	tst_critical
 
 EXCLUDE_ARCH_pdk += $(EXCLUDE_nocritical)
+# lh5801 has __critical blocks, but not __critical functions
+EXCLUDE_lh5801 += \
+	tst_critical \
+	tst_bug-3231
 
 ###################################################
 # Host Tests
