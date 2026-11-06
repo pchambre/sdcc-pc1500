@@ -490,6 +490,15 @@ lh5801_assignRegisters (ebbIndex *ebbi)
 
       if (psym && psym->onStack && !psym->isspilt)
         createStaticSpil (psym);
+      /* A register parameter with no iTemp standing in for it -- one
+         pointing to volatile (SDCCicode.c's geniCodeReceive() looks at
+         the etype) -- is received into the symbol itself, but
+         allocLocal() only asks for its memory when the parameter itself
+         is volatile, and SDCCglue.c leaves out a register parameter
+         nobody asked for: the code then refers to a symbol nothing
+         defines. */
+      else if (psym && IS_REGPARM (psym->etype) && !psym->reqv && psym->isref)
+        psym->allocreq = 1;
     }
 
   planSlots (ebbi);
