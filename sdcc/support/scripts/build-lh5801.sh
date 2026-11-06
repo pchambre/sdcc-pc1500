@@ -308,7 +308,7 @@ OUT="$OUTDIR/${BASENAME}-${BASE_HEX}-pc1500"
 cp pass2.bin "$OUT.bin"
 cp pass2.map "$OUT.map"
 SD_NAME="$(echo "${BASENAME:0:8}" | tr 'a-z' 'A-Z').BIN"
-SD_HDR="$(printf '\x%02X\x%02X' $(( BASE_DEC >> 8 )) $(( BASE_DEC & 255 )))"
+SD_HDR="\\$(printf '%03o' $(( BASE_DEC >> 8 )))\\$(printf '%03o' $(( BASE_DEC & 255 )))"
 { printf "$SD_HDR$SD_HDR"; cat "$OUT.bin"; } > "$OUTDIR/$SD_NAME"
 
 BIN_SIZE="$(stat -c%s "$OUT.bin" 2>/dev/null || stat -f%z "$OUT.bin")"

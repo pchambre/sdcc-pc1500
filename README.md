@@ -6,8 +6,8 @@ development for the **Sharp PC-1500** and its US/European rebadge, the
 **TRS-80 PC-2** — both built around the identical LH5801 CPU and ROM (only
 the case badging differs).
 
-Forked from **SDCC 4.6.2** (a post-4.6.0 development snapshot). Everything
-specific to this fork lives under [`sdcc/`](sdcc/), which is otherwise a
+Based on **SDCC 4.6.4** (trunk r17145, 2026-11-05; first forked from
+4.6.2, r16708). Everything specific to this fork lives under [`sdcc/`](sdcc/), which is otherwise a
 normal SDCC checkout — see [`sdcc/doc/README.txt`](sdcc/doc/README.txt)
 for upstream SDCC's own documentation. This README covers only what's
 different here; [LH5801.md](LH5801.md) is the guide to writing PC-1500
@@ -86,6 +86,9 @@ small changes too:
 - **`src/SDCCpeeph.c`** — `labelIsUncondJump()` picks each target's jump
   mnemonics; added the LH5801's (`jmp`/`bch`), and a FALSE return for a
   target with none listed instead of `strlen(NULL)`.
+- **`support/regression/MakeList`** � the regression tests lh5801 skips,
+  with the other ports' exclusions: the `__sfr` ones, and three that call
+  non-reentrant functions with stack arguments through pointers.
 - **`src/SDCCsymt.c`** — added `TARGET_IS_LH5801` to the list of
   no-native-multiply, byte-oriented targets when registering the compiler's
   built-in `_muluchar`/`_mulint`/etc. helper function types. Without this,
