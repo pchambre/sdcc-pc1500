@@ -997,6 +997,24 @@ parse()
 					return(0);
 #endif
 
+				/* sdld (2026-11-09): -B area -- write only the data
+				 * of the areas named (repeatable). The LH5801 port
+				 * links its banks, which share addresses, once per
+				 * bank this way, and once for everything else. */
+				case 'b':
+				case 'B':
+					unget(getnb());
+					if (*ip == 0) {
+						fprintf(stderr, "?ASlink-Error-Missing -B area\n");
+						lkexit(ER_FATAL);
+					}
+					if (noareas >= 16) {
+						fprintf(stderr, "?ASlink-Error-Too many -B areas\n");
+						lkexit(ER_FATAL);
+					}
+					oareas[noareas++] = strsto(ip);
+					return(0);
+
 				case 'C':
                                         if (is_sdld() && !(TARGET_IS_Z80 || TARGET_IS_GB)) {
                                                 codesav();

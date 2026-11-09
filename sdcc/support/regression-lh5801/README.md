@@ -42,6 +42,20 @@ without register allocation (every value in memory), the fallback. Every test is
 | lander | the example game: float physics, sqrtf, sprintf; a perfect Moon landing and an Io crash, checked to the tenth |
 | edit | the example line editor: insert, count, replace (lines growing and shrinking), sort, find, delete, browse; the buffer checked byte for byte |
 
+`banked.sh` (2026-11-09) builds `banked/` with `build-lh5801.sh --banks=`
+for a CE-1638, a CE-163F and the internal card, and runs each with the
+device emulated and the banks' images loaded. main() calls into banks 1
+and 2, between them nested and back, with arguments and results in A, X
+and memory, a fixed function from a bank, `bank_select()`, then `exit()`
+from inside bank 1. After every run the starting bank must be back in.
+The card needs `PC1500EXPROM`, the expansion ROM (`rom_8800.bin`), whose
+`BANK_RAW_ENTRY` at 8819H is the card's switch.
+
+```sh
+export PC1500EXPROM=".../PC1500-PSOC5/Design01_NonDMA_8K_PV_Swap.cydsn/rom/rom_8800.bin"
+support/regression-lh5801/banked.sh            # ce1638 ce163f card
+```
+
 `src/lh5801/test_smoke.py` separately checks the exact linked bytes of a
 minimal program (startup included).
 

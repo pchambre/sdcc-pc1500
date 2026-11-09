@@ -1039,6 +1039,12 @@ extern	FILE	*yfp;		/*	SDCDB output file handle
 				 */
 #endif
 
+extern	char	*oareas[];	/*	-B: write only these areas' data
+				 */
+extern	int	noareas;	/*	how many -B areas
+				 */
+extern	int	lkoarea(struct area *);	/* the area's data goes out (-B)
+				 */
 extern	int	oflag;		/*	Output file type flag
 				 */
 extern	char	*outnam;	/*	Pointer to -o+ output file name  n.u.sdld

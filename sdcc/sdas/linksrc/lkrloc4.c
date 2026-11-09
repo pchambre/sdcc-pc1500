@@ -859,7 +859,7 @@ fprintf(stdout, "R4_PAGX-MERGE: relv = %X, pcrv = %X, pagx = %X, n = %X, error =
 	if (uflag != 0) {
 		lkulist(1);
 	}
-	if (oflag != 0) {
+	if (oflag != 0 && lkoarea(a[aindex]->a_bap)) {
 		lkout(1);
 	}
 }

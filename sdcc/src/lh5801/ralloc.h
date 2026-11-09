@@ -66,5 +66,7 @@ iCode *lh5801_ralloc2_cc (ebbIndex *ebbi);
 extern bool lh5801_noLocalOverlay;
 void lh5801_overlayFunction (ebbIndex *ebbi);
 void lh5801_overlayEmit (FILE *of);
+int lh5801_codeBank (void);
+void lh5801_bankEmit (FILE *of);
 
 #endif

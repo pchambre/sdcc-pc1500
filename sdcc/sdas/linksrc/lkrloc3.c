@@ -690,7 +690,7 @@ relr3(void)
 	if (uflag != 0) {
 		lkulist(1);
 	}
-	if (oflag != 0) {
+	if (oflag != 0 && lkoarea(a[aindex]->a_bap)) {
 		lkout(1);
 	}
 }

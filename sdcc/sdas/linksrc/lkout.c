@@ -48,6 +48,20 @@
  *	lkout.c contains no local variables.
  */
 
+/* -B: whether the area's data goes to the output (every area without -B) */
+int
+lkoarea(struct area *ap)
+{
+	int i;
+
+	if (noareas == 0)
+		return(1);
+	for (i = 0; i < noareas; i++)
+		if (strcmp(ap->a_id, oareas[i]) == 0)
+			return(1);
+	return(0);
+}
+
 /*)Function	void	lkout(i)
  *
  *		int	i		1 - process data

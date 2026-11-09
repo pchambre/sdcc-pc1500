@@ -12,8 +12,9 @@
 ; the same path. The status is ignored: BASIC's CALL has nowhere to put
 ; it.
 ;
-; GSFINAL references __sdcc_lh5801_sp, so this module is linked into every
-; program; exit() itself costs 9 bytes.
+; GSFINAL references __sdcc_lh5801_sp and __sdcc_lh5801_atexit, so this
+; module is linked into every program; exit() itself costs 9 bytes, the
+; exit hook 3.
 ;--------------------------------------------------------------------------
 
 	.module exit
@@ -33,6 +34,14 @@ _exit:
 	sta	xl
 	stx	s
 	jmp	__sdcc_lh5801_exit
+
+; Startup's GSFINAL calls this on the way back to BASIC, from main's
+; return or exit(). A RTN, unless a module's startup code put a JMP to its
+; own exit code over it: a banked program's (device/lib/lh5801/bank/*.asm)
+; switches back to the bank BASIC was using. Programs run from RAM.
+__sdcc_lh5801_atexit::
+	rtn
+	.dw	0
 
 	.area DATA
 __sdcc_lh5801_sp::

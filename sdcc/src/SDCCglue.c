@@ -2696,6 +2696,7 @@ glue (void)
                  "\tsta\t(__sdcc_lh5801_sp + 1)\n"
                  "\tsjp\t_main\n"
                  "__sdcc_lh5801_exit::\n"
+                 "\tsjp\t__sdcc_lh5801_atexit\n"
                  "\tpop\tu\n"
                  "\tpop\ty\n"
                  "\trtn\n");

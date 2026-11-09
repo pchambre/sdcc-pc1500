@@ -63,6 +63,11 @@ char	rb[NINPUT];	/*	LST file text line being
 			 */
 int	oflag;		/*	Output file type flag
 			 */
+char	*oareas[16];	/*	-B: write only these areas' data
+			 *	(sdld: the LH5801 port's bank images)
+			 */
+int	noareas;	/*	how many -B areas
+			 */
 char	*outnam;	/*	Pointer to -o+ output file name
 			 */
 char	*outext;	/*	Pointer to -o+ output file extension

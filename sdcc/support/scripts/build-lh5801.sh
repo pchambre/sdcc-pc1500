@@ -6,7 +6,20 @@
 #
 # Paul Chambre, 2026
 #
-# Usage: build-lh5801.sh <source.c|object.rel|library.lib> [more ...] [base_addr_hex]
+# Usage: build-lh5801.sh [--banks=DEVICE] [--pc1500a] <source.c|object.rel|library.lib> [more ...] [base_addr_hex]
+#
+#   --banks=DEVICE  bank-switched code (2026-11-09): files with `#pragma bank N`
+#                   go in bank N of DEVICE's 0000H-3FFFH window, everything
+#                   else at the base address, which must then be 4000H or above.
+#                   DEVICE is card (the internal expansion card, BANK 0-4),
+#                   ce163 (banks 0-1), ce1638 (0-7) or ce163f (RAM 0-7,
+#                   flash 9-15). See device/include/lh5801/pc1500_bank.h.
+#                   Each bank's image starts at the bank's BASIC program
+#                   start with FFH -- an empty BASIC program, so BASIC (and
+#                   the card's BANK, the vendors' switchers) leave the
+#                   bank alone -- and the code follows. Writes one image
+#                   per bank besides the fixed one, and LOAD.TXT.
+#   --pc1500a       a CE device's bank switch at 6800H, not 5800H
 #
 #   .rel            an object already compiled with sdcc -c -mlh5801 (SDCC's
 #                   regression suite links its tests this way)
@@ -123,8 +136,12 @@ usage() {
 SRCS=()
 LIBS=()
 BASE_HEX="$DEFAULT_BASE"
+BANKS=""
+PC1500A=0
 for arg in "$@"; do
   case "$arg" in
+    --banks=*) BANKS="${arg#--banks=}" ;;
+    --pc1500a) PC1500A=1 ;;
     *.c|*.rel)
       [ -f "$arg" ] || { echo "error: no such file: $arg" >&2; exit 1; }
       SRCS+=("$(cd "$(dirname "$arg")" && pwd)/$(basename "$arg")")
@@ -152,6 +169,23 @@ if [ $((16#$BASE_HEX)) -ge $((16#4000)) ] && [ $((16#$BASE_HEX)) -le $((16#$RESE
        "interpreter state (manual section 5-3-6), not free RAM, even though" \
        "it's physically writable. Loading here will corrupt BASIC." >&2
 fi
+
+# --banks: each device's banks, where a bank's BASIC program starts (the
+# image's first byte, an FFH), and how its switch module is assembled
+# (device/lib/lh5801/bank/).
+case "$BANKS" in
+  "") ;;
+  card)   BANK_MIN=0; BANK_MAX=4;  BANK_PROG=00C5 ;;
+  ce163)  BANK_MIN=0; BANK_MAX=1;  BANK_PROG=00C5; BANK_HOME_AT=0 ;;
+  ce1638) BANK_MIN=0; BANK_MAX=7;  BANK_PROG=0104; BANK_HOME_AT=0x00D4 ;;
+  ce163f) BANK_MIN=0; BANK_MAX=15; BANK_PROG=0112; BANK_HOME_AT=0x00E2 ;;
+  *) echo "error: --banks= takes card, ce163, ce1638 or ce163f, got: $BANKS" >&2; exit 1 ;;
+esac
+if [ -n "$BANKS" ] && [ $((16#$BASE_HEX)) -lt $((16#4000)) ]; then
+  echo "error: with --banks, the base address must be 4000H or above (the banks are 0000H-3FFFH): $BASE_HEX" >&2
+  exit 1
+fi
+BANK_PORT=$([ "$PC1500A" = 1 ] && echo 0x68 || echo 0x58)
 
 OUTDIR="$(pwd)"
 BASENAME="$(basename "${SRCS[0]}")"; BASENAME="${BASENAME%.*}"
@@ -222,6 +256,18 @@ done
 grep -q '^S _main Def' "$WORKDIR/${REL_ARGS[0]}" ||
   { echo "error: no source file defines main()" >&2; exit 1; }
 
+# --banks: the device's switch, after main's module (its GSINIT code runs
+# after startup has zeroed DATA)
+if [ -n "$BANKS" ]; then
+  case "$BANKS" in
+    card) cp "$DEVICE_LIB_LH5801/bank/bank_card.asm" "$WORKDIR/bank_dev.asm" ;;
+    *) { echo "BANK_PORT = $BANK_PORT"; echo "BANK_HOME_AT = $BANK_HOME_AT";
+         cat "$DEVICE_LIB_LH5801/bank/bank_ce.asm"; } > "$WORKDIR/bank_dev.asm" ;;
+  esac
+  "$ASLH5801" -logs "$WORKDIR/bank_dev.asm" >/dev/null
+  REL_ARGS=("${REL_ARGS[0]}" bank_dev.rel "${REL_ARGS[@]:1}")
+fi
+
 cd "$WORKDIR"
 
 hex_to_dec() { echo $((16#$1)); }
@@ -239,12 +285,17 @@ area_size() {
   echo $((16#${size:-0}))
 }
 
-write_lnk() {  # write_lnk <name> <area=hex_base>...
+write_lnk() {  # write_lnk <name> <area=hex_base>... [-B area]...
   local name="$1"; shift
   {
     echo "-muwx"
     echo "-i $name"
-    for b in "$@"; do echo "-a ${b%%=*} = 0x${b#*=}"; done
+    for b in "$@"; do
+      case "$b" in
+        -B*) echo "$b" ;;    # sdld: write only these areas' data
+        *) echo "-a ${b%%=*} = 0x${b#*=}" ;;
+      esac
+    done
     for l in "${LIBS[@]+"${LIBS[@]}"}"; do
       echo "-k $(dirname "$l")"
       echo "-l $(basename "$l" .lib)"
@@ -271,10 +322,34 @@ LAYOUT=(HOME GSINIT GSFINAL CONST INITIALIZER CODE DATA INITIALIZED)
 # space_a/space_b at CODE's own address, and storing to them overwrote
 # code. Not SSEG (above), nor DSEG: 128 bytes with no symbol in them in
 # every program, kept where they were (at 0, unused).
+# --banks: CODE_<n>, bank n's code, at the bank's BASIC program start + 1
+# in every bank -- the same addresses, so sdld writes each on its own
+# (-B, below).
+BANK_AREAS=()
 while read -r area; do
   case " ${LAYOUT[*]} SSEG DSEG " in *" $area "*) continue ;; esac
+  if [[ "$area" =~ ^CODE_([0-9]+)$ ]]; then
+    n="${BASH_REMATCH[1]}"
+    [ -n "$BANKS" ] ||
+      { echo "error: $area: \`#pragma bank $n\` needs --banks=" >&2; exit 1; }
+    { [ "$n" -ge "$BANK_MIN" ] && [ "$n" -le "$BANK_MAX" ]; } ||
+      { echo "error: $area: $BANKS has banks $BANK_MIN-$BANK_MAX" >&2; exit 1; }
+    [ "$BANKS$n" != ce163f8 ] ||
+      { echo "error: CODE_8: the CE-163F's bank 8 holds its vendor's utilities" >&2; exit 1; }
+    BANK_AREAS+=("$area")
+    continue
+  fi
   LAYOUT+=("$area")
 done < <(awk '$NF ~ /^\(REL/ && $4 == "=" {print $1}' pass1.map)
+BANK_CODE_HEX=""
+if [ -n "$BANKS" ]; then
+  BANK_CODE_HEX="$(printf '%04X' $(( 16#$BANK_PROG + 1 )))"
+  for area in "${BANK_AREAS[@]+"${BANK_AREAS[@]}"}"; do
+    size=$(area_size pass1.map "$area")
+    [ $(( 16#$BANK_CODE_HEX + size )) -le $((16#4000)) ] ||
+      { echo "error: $area is $size bytes, past 3FFFH from $BANK_CODE_HEX" >&2; exit 1; }
+  done
+fi
 BASES=()
 addr=$BASE_DEC
 image_end=$addr
@@ -284,10 +359,18 @@ for area in "${LAYOUT[@]}"; do
   [ "$area" = CODE ] && image_end=$addr
 done
 ram_end=$addr
-write_lnk pass2 "${BASES[@]}"
+for area in "${BANK_AREAS[@]+"${BANK_AREAS[@]}"}"; do BASES+=("$area=$BANK_CODE_HEX"); done
+if [ ${#BANK_AREAS[@]} -gt 0 ]; then
+  # the fixed image without the banks, which share addresses
+  FIXED_ONLY=()
+  for area in "${LAYOUT[@]}"; do FIXED_ONLY+=("-B $area"); done
+  write_lnk pass2 "${BASES[@]}" "${FIXED_ONLY[@]}"
+else
+  write_lnk pass2 "${BASES[@]}"
+fi
 "$SDLD" -nf pass2 >/dev/null
 
-for area in "${LAYOUT[@]}"; do
+for area in "${LAYOUT[@]}" "${BANK_AREAS[@]+"${BANK_AREAS[@]}"}"; do
   [ "$(area_size pass1.map "$area")" = "$(area_size pass2.map "$area")" ] ||
     { echo "error: area $area changed size between link passes" >&2; exit 1; }
 done
@@ -311,6 +394,42 @@ SD_NAME="$(echo "${BASENAME:0:8}" | tr 'a-z' 'A-Z').BIN"
 SD_HDR="\\$(printf '%03o' $(( BASE_DEC >> 8 )))\\$(printf '%03o' $(( BASE_DEC & 255 )))"
 { printf "$SD_HDR$SD_HDR"; cat "$OUT.bin"; } > "$OUTDIR/$SD_NAME"
 
+# --banks: each bank's image, FFH (an empty BASIC program) then its code;
+# the SD file's header has CALL address 0 (none).
+BANK_FILES=()
+for area in "${BANK_AREAS[@]+"${BANK_AREAS[@]}"}"; do
+  n="${area#CODE_}"
+  write_lnk "bank$n" "${BASES[@]}" "-B $area"
+  "$SDLD" -nf "bank$n" >/dev/null
+  "$MAKEBIN" -p -s 65536 -o "$(( 16#$BANK_CODE_HEX ))" "bank$n.ihx" "bank$n.code" >/dev/null
+  { printf '\377'; cat "bank$n.code"; } > "$OUT-b$n.bin"
+  prog_dec=$(( 16#$BANK_PROG ))
+  hdr="\\$(printf '%03o' $(( prog_dec >> 8 )))\\$(printf '%03o' $(( prog_dec & 255 )))"
+  bank_sd="$(echo "${BASENAME:0:5}B$n" | tr 'a-z' 'A-Z').BIN"
+  { printf "$hdr\000\000"; cat "$OUT-b$n.bin"; } > "$OUTDIR/$bank_sd"
+  BANK_FILES+=("$n:$bank_sd:$(stat -c%s "$OUT-b$n.bin")")
+done
+
+# --banks=card: the SD file holds the banks too, for SDLOAD M to load in
+# one go (RP2350/keywords.c, segload): FFH 'B', the CALL address, a count,
+# then per segment bank (FFH: the fixed code), address, length (all
+# big-endian), then the segments' bytes in that order -- the banks first.
+if [ "$BANKS" = card ] && [ ${#BANK_FILES[@]} -gt 0 ]; then
+  oct() { printf '\\%03o' "$1"; }
+  be16() { oct $(( $1 >> 8 )); oct $(( $1 & 255 )); }
+  hdr="$(oct 255)$(oct 66)$(be16 "$BASE_DEC")$(oct $(( ${#BANK_FILES[@]} + 1 )))"
+  for f in "${BANK_FILES[@]}"; do
+    IFS=: read -r n sd size <<< "$f"
+    hdr="$hdr$(oct "$n")$(be16 $(( 16#$BANK_PROG )))$(be16 "$size")"
+  done
+  hdr="$hdr$(oct 255)$(be16 "$BASE_DEC")$(be16 "$(stat -c%s "$OUT.bin")")"
+  {
+    printf "$hdr"
+    for f in "${BANK_FILES[@]}"; do cat "$OUT-b${f%%:*}.bin"; done
+    cat "$OUT.bin"
+  } > "$OUTDIR/$SD_NAME"
+fi
+
 BIN_SIZE="$(stat -c%s "$OUT.bin" 2>/dev/null || stat -f%z "$OUT.bin")"
 echo "$OUT.bin"
 echo "  image: $BIN_SIZE bytes at 0x$BASE_HEX-0x$(printf '%04X' $(( image_end - 1 )))," \
@@ -319,4 +438,70 @@ echo "  image: $BIN_SIZE bytes at 0x$BASE_HEX-0x$(printf '%04X' $(( image_end - 
 # below it -- the program's RAM-only areas included, which the startup
 # code zeroes on every CALL.
 echo "  reserve it first with NEW &$(printf '%04X' "$ram_end") (before loading it)"
-echo "  SD card: $SD_NAME -- SDLOAD M \"$SD_NAME\" loads and starts it"
+if [ "$BANKS" = card ] && [ ${#BANK_FILES[@]} -gt 0 ]; then
+  echo "  SD card: $SD_NAME -- SDLOAD M \"$SD_NAME\" loads it and its banks and starts it"
+else
+  echo "  SD card: $SD_NAME -- SDLOAD M \"$SD_NAME\" loads and starts it"
+fi
+
+# --banks: LOAD.TXT, the steps to load it all, typed at the prompt (in
+# RUN mode, nothing running: a running program can't switch the bank
+# under itself).
+if [ ${#BANK_FILES[@]} -gt 0 ]; then
+  port=$([ "$PC1500A" = 1 ] && echo 68 || echo 58)
+  {
+    echo "$BASENAME: fixed code at &$BASE_HEX, banked code for $BANKS."
+    echo "Type each line at the prompt: NEW in PRO mode, the rest in RUN"
+    echo "mode. A bank holding code can't hold a BASIC program: the one"
+    echo "there is lost."
+    echo
+    case "$BANKS" in
+      card)
+        echo "$SD_NAME holds the fixed code and every bank:"
+        echo "  NEW &$(printf '%04X' "$ram_end")"
+        echo "  SDLOAD M \"$SD_NAME\"        (loads it all and starts it; CALL &$BASE_HEX after)"
+        echo
+        echo "To load one bank's code on its own (BANK needs BASIC's program"
+        echo "still in 0000H-3FFFH, so before that NEW):"
+        for f in "${BANK_FILES[@]}"; do
+          IFS=: read -r n sd size <<< "$f"
+          echo "  BANK $n"
+          echo "  SDLOAD M \"$sd\"        ($size bytes at &$BANK_PROG)"
+        done
+        echo "  BANK 0                      (the bank BASIC uses)"
+        ;;
+      *)
+        echo "The banks first, while BASIC's program is still in 0000H-3FFFH:"
+        home="H=PEEK &D4"; [ "$BANKS" = ce163f ] && home="H=PEEK &E2"
+        [ "$BANKS" = ce163 ] && home="H=0                  (start from bank 0)"
+        echo "  $home"
+        for f in "${BANK_FILES[@]}"; do
+          IFS=: read -r n sd size <<< "$f"
+          echo "  POKE &$port$(printf '%02X' "$n"),0"
+          echo "  CLOAD M \"${BASENAME:0:12}B$n\";&$BANK_PROG     ($BASENAME-$BASE_HEX-pc1500-b$n.bin, $size bytes)"
+        done
+        echo "  POKE &${port}00+H,0          (back to the BASIC bank)"
+        echo
+        echo "Then the fixed code:"
+        echo "  NEW &$(printf '%04X' "$ram_end")"
+        echo "  CLOAD M \"${BASENAME:0:16}\";&$BASE_HEX      ($BASENAME-$BASE_HEX-pc1500.bin)"
+        echo "  CALL &$BASE_HEX"
+        ;;
+    esac
+    if [ "$BANKS" = ce163f ]; then
+      echo
+      echo "Banks 9-15 are flash: load the image into a free RAM bank as"
+      echo "above, then switch to that bank and copy it with the vendor's"
+      echo "utilities, X= and CALL on separate lines:"
+      echo "  X=<that RAM bank>"
+      echo "  CALL &E3,X"
+      echo "  X=<the flash bank>"
+      echo "  CALL &C6,X"
+    fi
+  } > "$OUTDIR/LOAD.TXT"
+  for f in "${BANK_FILES[@]}"; do
+    IFS=: read -r n sd size <<< "$f"
+    echo "  bank $n: $BASENAME-$BASE_HEX-pc1500-b$n.bin, $size bytes at 0x$BANK_PROG (SD: $sd)"
+  done
+  echo "  LOAD.TXT: how to load them ($BANKS)"
+fi

@@ -333,10 +333,81 @@ lh5801_genInitStartup (FILE *of)
    reentrant keyword being recognized when C source uses it directly. */
 static char *lh5801_keywords[] = {
   "at",                         /* __at(addr): an equate, nothing allocated */
+  "banked",                     /* __banked: called through ___sdcc_bcall (gen.c genCall) */
   "critical",                   /* __critical { }: IE saved on the stack, interrupts off (gen.c genCritical) */
   "reentrant",
   NULL
 };
+
+/*-----------------------------------------------------------------*/
+/* #pragma bank N (2026-11-09): this file's code goes in area CODE_N, */
+/* bank N of a banked 0000H-3FFFH device -- the internal card, a      */
+/* CE-163, CE-1638 or CE-163F (build-lh5801.sh --banks=). Its         */
+/* __banked functions are called through ___sdcc_bcall, which puts    */
+/* bank N in for the call (gen.c genCall); each defines its bank as   */
+/* b<name> (lh5801_bankEmit). The same as `#pragma codeseg CODE_N`.   */
+/*-----------------------------------------------------------------*/
+enum
+{
+  P_BANK = 1,
+};
+
+static int
+lh5801_do_pragma (int id, const char *name, const char *cp)
+{
+  struct pragma_token_s token;
+  int err = 0;
+
+  init_pragma_token (&token);
+  if (id == P_BANK)
+    {
+      cp = get_pragma_token (cp, &token);
+      if (token.type != TOKEN_INT || token.val.int_val < 0 || token.val.int_val > 15)
+        err = 1;
+      else
+        {
+          struct dbuf_s buffer;
+
+          dbuf_init (&buffer, 16);
+          dbuf_printf (&buffer, "CODE_%d", (int) token.val.int_val);
+          cp = get_pragma_token (cp, &token);
+          if (token.type != TOKEN_EOL)
+            {
+              err = 1;
+              dbuf_destroy (&buffer);
+            }
+          else
+            {
+              dbuf_c_str (&buffer);
+              options.code_seg = (char *) dbuf_detach (&buffer);
+            }
+        }
+    }
+  if (err)
+    werror (W_BAD_PRAGMA_ARGUMENTS, name);
+  free_pragma_token (&token);
+  return 1;
+}
+
+static struct pragma_s lh5801_pragma_tbl[] = {
+  {"bank", P_BANK, 0, lh5801_do_pragma},
+  {NULL, 0, 0, NULL},
+};
+
+static int
+lh5801_process_pragma (const char *s)
+{
+  return process_pragma_tbl (lh5801_pragma_tbl, s);
+}
+
+/* genAssemblerEnd: the overlaid locals (overlay.c), then the banks of
+   this module's __banked functions. */
+static void
+lh5801_genAssemblerEnd (FILE *of)
+{
+  lh5801_overlayEmit (of);
+  lh5801_bankEmit (of);
+}
 
 /* $2 (the assembler's output object filename, honoring -o) must be
    passed explicitly -- sdas's "outfile file1 [file2...]" usage form
@@ -559,13 +630,13 @@ PORT lh5801_port =
   NULL,                         /* rtrackUpdate */
   lh5801_keywords,
   genLH5801AssemblerStart,
-  lh5801_overlayEmit,           /* genAssemblerEnd: overlaid locals (overlay.c) */
+  lh5801_genAssemblerEnd,       /* genAssemblerEnd: overlaid locals (overlay.c), banks */
   lh5801_genIVT,
   0,                            /* genXINIT -- inlined into genInitStartup instead */
   lh5801_genInitStartup,
   lh5801_reset_regparms,
   lh5801_reg_parm,
-  NULL,                         /* process_pragma */
+  lh5801_process_pragma,        /* process_pragma: #pragma bank N */
   NULL,                         /* getMangledFunctionName */
   lh5801_hasNativeMulFor,
   lh5801_hasExtBitOp,

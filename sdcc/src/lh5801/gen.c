@@ -22,6 +22,8 @@
 #include "SDCCgen.h"
 #include "SDCCpeeph.h"
 
+static void bankFunction (const iCode *ic, symbol *sym);
+
 /*-----------------------------------------------------------------*/
 /* Output, and the register allocator's dry run                     */
 /*                                                                   */
@@ -789,6 +791,7 @@ genFunction (const iCode *ic)
 
   emit ("", "%s:", sym->rname);
   genLine.lineCurr->isLabel = 1;
+  bankFunction (ic, sym);
 
   /* A __critical function would have to keep the flags clear of its
      parameters (A, X) on entry and its return value (A, X) on exit, with
@@ -1563,6 +1566,12 @@ genCall (const iCode *ic)
       aopOp (left);
       aopToDir (left, 0);
       wassertl (left->aop->size == 2, "lh5801: PCALL target must be a 2-byte function pointer");
+      if (IFFUNC_ISBANKEDCALL (operandType (left)->next) && !regalloc_dry_run)
+        {
+          fprintf (stderr, "%s:%d: error: lh5801: no calls to __banked functions through a pointer\n",
+                   ic->filename, ic->lineno);
+          fatalError++;
+        }
 
       loadA (left->aop, 0, left->aop->size);
       emit ("sta", "(__lh5801_pcall_trampoline + 1)");
@@ -1596,11 +1605,31 @@ genCall (const iCode *ic)
 
       if (!regalloc_dry_run)
         loadSends (ic);
-      if (twice)
-        genLine.lineElement.isInline++;
-      emit ("sjp", "%s", name);
-      if (twice)
-        genLine.lineElement.isInline--;
+      if (IFFUNC_ISBANKEDCALL (sym->type))
+        {
+          /* through the bank trampoline, the target and its bank inline
+             (see lh5801_codeBank): inline lines, so neither outline.c nor
+             a peephole rule separates the SJP from its data */
+          if (parmBytes && !regalloc_dry_run)
+            {
+              fprintf (stderr, "%s:%d: error: lh5801: no stack arguments to __banked function %s\n",
+                       ic->filename, ic->lineno, sym->name);
+              fatalError++;
+            }
+          genLine.lineElement.isInline++;
+          emit ("sjp", "___sdcc_bcall");
+          emit (".dw", "%s", name);
+          emit (".db", "b%s", name);
+          genLine.lineElement.isInline--;
+        }
+      else
+        {
+          if (twice)
+            genLine.lineElement.isInline++;
+          emit ("sjp", "%s", name);
+          if (twice)
+            genLine.lineElement.isInline--;
+        }
     }
 
   if (IC_RESULT (ic))
@@ -3809,6 +3838,82 @@ namesReg (const char *ops, const char *reg)
 }
 
 /*-----------------------------------------------------------------*/
+/* Banked code (2026-11-09). `#pragma bank N` puts a file's code in   */
+/* area CODE_N (main.c); a call to a __banked function is             */
+/*                                                                    */
+/*      sjp     ___sdcc_bcall                                         */
+/*      .dw     _f                                                    */
+/*      .db     b_f                                                   */
+/*                                                                    */
+/* and ___sdcc_bcall (device/lib/lh5801/_lh5801_bcall.asm) switches   */
+/* to bank b_f, calls _f, switches back and returns past the data,    */
+/* keeping A and X both ways (the register arguments and results).    */
+/* Each __banked function's file defines b_<name> == N               */
+/* (lh5801_bankEmit). The switch itself is the device's              */
+/* (build-lh5801.sh --banks=).                                       */
+/*-----------------------------------------------------------------*/
+
+/* this file's bank: N for area CODE_N, else -1 */
+int
+lh5801_codeBank (void)
+{
+  const char *seg = options.code_seg;
+  char *end;
+  long n;
+
+  if (!seg || strncmp (seg, "CODE_", 5) || !isdigit ((unsigned char) seg[5]))
+    return -1;
+  n = strtol (seg + 5, &end, 10);
+  return *end ? -1 : (int) n;
+}
+
+static set *bankedFuncs;        /* rnames of this file's __banked functions */
+
+void
+lh5801_bankEmit (FILE *of)
+{
+  const char *name;
+  int bank = lh5801_codeBank ();
+
+  for (name = setFirstItem (bankedFuncs); name; name = setNextItem (bankedFuncs))
+    fprintf (of, "b%s == %d\n", name, bank);
+  deleteSet (&bankedFuncs);
+}
+
+/* At a function's start: a __banked one has a bank, no stack arguments
+   (___sdcc_bcall's own return address and saved bank sit between them
+   and the callee), and its bank recorded; a public function in a bank
+   that isn't __banked gets a warning. */
+static void
+bankFunction (const iCode *ic, symbol *sym)
+{
+  int bank = lh5801_codeBank ();
+
+  if (regalloc_dry_run)
+    return;
+  if (IFFUNC_BANKED (sym->type))
+    {
+      if (bank < 0)
+        {
+          fprintf (stderr, "%s:%d: error: lh5801: __banked function %s needs `#pragma bank N` "
+                   "in its file\n", ic->filename, ic->lineno, sym->name);
+          fatalError++;
+        }
+      else if (IFFUNC_ISREENT (sym->type) || IFFUNC_HASVARARGS (sym->type))
+        {
+          fprintf (stderr, "%s:%d: error: lh5801: __banked function %s can't be reentrant "
+                   "or variadic\n", ic->filename, ic->lineno, sym->name);
+          fatalError++;
+        }
+      else
+        addSet (&bankedFuncs, Safe_strdup (sym->rname));
+    }
+  else if (bank >= 0 && !IS_STATIC (sym->etype))
+    fprintf (stderr, "%s:%d: warning: lh5801: %s is in bank %d but not __banked: "
+             "only code in bank %d can call it\n", ic->filename, ic->lineno, sym->name, bank, bank);
+}
+
+/*-----------------------------------------------------------------*/
 /* Which of the Y and U halves each function of this module leaves    */
 /* alone, recorded once its code is final (recordPreservedRegs()):     */
 /* its instructions never name them, and every function it calls is   */
@@ -3852,7 +3957,8 @@ recordPreservedRegs (lineNode *head)
   lineNode *ln;
   int r, k;
 
-  if (!currFunc || IFFUNC_ISREENT (currFunc->type))
+  /* a __banked function's callers go through ___sdcc_bcall, which uses Y and U */
+  if (!currFunc || IFFUNC_ISREENT (currFunc->type) || IFFUNC_BANKED (currFunc->type))
     return;
   for (r = 0; r < LH5801_NUM_REGS; r++)
     regs[r] = r >= LH5801_REG_YL;
