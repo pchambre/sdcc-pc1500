@@ -6,7 +6,7 @@
 #
 # Paul Chambre, 2026
 #
-# Usage: build-lh5801.sh [--banks=DEVICE] [--pc1500a] <source.c|object.rel|library.lib> [more ...] [base_addr_hex]
+# Usage: build-lh5801.sh [--banks=DEVICE] [--pc1500a] [--expansion] <source.c|object.rel|library.lib> [more ...] [base_addr_hex]
 #
 #   --banks=DEVICE  bank-switched code (2026-11-09): files with `#pragma bank N`
 #                   go in bank N of DEVICE's 0000H-3FFFH window, everything
@@ -20,6 +20,15 @@
 #                   bank alone -- and the code follows. Writes one image
 #                   per bank besides the fixed one, and LOAD.TXT.
 #   --pc1500a       a CE device's bank switch at 6800H, not 5800H
+#   --expansion     for the PC-1500 SD/BLE expansion module (2026-11-19):
+#                   the library's modules in device/lib/lh5801/expansion/
+#                   replace the plain ones of the same name, or join them
+#                   -- the display
+#                   kept in BASIC's text buffers for the module's Screen
+#                   pane, keyScan() reading its Bluetooth keyboard, keyWait()
+#                   keeping its command history out -- and PC1500_EXPANSION
+#                   is defined for the program and the library's C. See
+#                   device/include/lh5801/pc1500.h. Its own library cache.
 #
 #   .rel            an object already compiled with sdcc -c -mlh5801 (SDCC's
 #                   regression suite links its tests this way)
@@ -85,6 +94,11 @@ DEVICE_LIB="$SDCC_ROOT/device/lib"
 # runtime library's included -- e.g. SDCCFLAGS=--oldralloc. Each set of
 # flags gets its own library cache.
 SDCCFLAGS="${SDCCFLAGS:-}"
+EXPANSION=0
+for arg in "$@"; do [ "$arg" = --expansion ] && EXPANSION=1; done
+if [ "$EXPANSION" = 1 ]; then
+  SDCCFLAGS="$SDCCFLAGS -DPC1500_EXPANSION"
+fi
 LIB_CACHE="$SDCC_ROOT/device/lib/build/lh5801"
 if [ -n "$SDCCFLAGS" ]; then
   LIB_CACHE="$LIB_CACHE-$(echo "$SDCCFLAGS" | md5sum | cut -c1-8)"
@@ -142,6 +156,7 @@ for arg in "$@"; do
   case "$arg" in
     --banks=*) BANKS="${arg#--banks=}" ;;
     --pc1500a) PC1500A=1 ;;
+    --expansion) ;;  # above, with SDCCFLAGS
     *.c|*.rel)
       [ -f "$arg" ] || { echo "error: no such file: $arg" >&2; exit 1; }
       SRCS+=("$(cd "$(dirname "$arg")" && pwd)/$(basename "$arg")")
@@ -203,8 +218,18 @@ compile_c() {  # compile_c <src.c> <out_dir> -> <out_dir>/<name>.rel
 
 # --- the runtime library (cached) --------------------------------------
 mkdir -p "$LIB_CACHE"
-LIB_SRCS=("$DEVICE_LIB_LH5801"/*.asm)
-for f in "$DEVICE_LIB_LH5801"/*.c; do [ -e "$f" ] && LIB_SRCS+=("$f"); done
+LIB_SRCS=()
+for f in "$DEVICE_LIB_LH5801"/*.asm "$DEVICE_LIB_LH5801"/*.c; do
+  [ -e "$f" ] || continue
+  # --expansion: expansion/<name> in place of <name>
+  [ "$EXPANSION" = 1 ] && [ -e "$DEVICE_LIB_LH5801/expansion/${f##*/}" ] && f="$DEVICE_LIB_LH5801/expansion/${f##*/}"
+  LIB_SRCS+=("$f")
+done
+if [ "$EXPANSION" = 1 ]; then  # and its own modules (keyscan.asm: keyScan() out of keyboard.asm)
+  for f in "$DEVICE_LIB_LH5801"/expansion/*.asm "$DEVICE_LIB_LH5801"/expansion/*.c; do
+    [ -e "$f" ] && [ ! -e "$DEVICE_LIB_LH5801/${f##*/}" ] && LIB_SRCS+=("$f")
+  done
+fi
 for f in "${RUNTIME_SOURCES[@]}"; do LIB_SRCS+=("$DEVICE_LIB/$f.c"); done
 # Parallel builds (make -j in SDCC's regression suite) share the cache:
 # modules are rebuilt in a private directory and renamed into place, and

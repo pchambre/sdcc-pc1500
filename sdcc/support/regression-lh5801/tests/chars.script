@@ -1,0 +1,6 @@
+# reads chars.c's displays ('_' a space)
+u:IT'S_[OK]:20000 w:300
+k:ENT
+u:X~~~Y':5000 w:300
+k:ENT
+u:OK:20000

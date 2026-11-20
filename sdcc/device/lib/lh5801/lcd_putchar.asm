@@ -51,33 +51,15 @@
 	.area CODE
 
 	.globl _lcdPutChar
+	.globl __lcd_draw
 
 ;-----------------------------------------------------------------
 ; void lcdPutChar(unsigned char c);
 ;
-; c arrives in A (a register parameter, see src/lh5801/main.c); it's kept
-; in lcdPutChar_c across the ROM calls below.
+; c arrives in A (a register parameter, see src/lh5801/main.c). The
+; drawing, and the cursor's 6 single-column steps (the font's 5-column
+; glyph and its 1-column gap), are lcd_draw.asm's -- which also draws
+; ', [ and ], missing from the ROM's font.
 ;-----------------------------------------------------------------
 _lcdPutChar:			; c in A
-	sta	(lcdPutChar_c)
-	lda	(0x7875)	; past the last 6-column cell (GCU > 150), a
-	cpi	a, 151		; character would be drawn outside the display
-	bcs	lcdPutChar_full	; buffer -- drop it instead, so the line is
-				; simply cut at 26 characters
-	vmj	0x8C		; X = real display-buffer address for the
-				; current Graphic Cursor position
-	lda	(lcdPutChar_c)
-	vmj	0x8A		; draw the character at X using the ROM's
-				; own font table
-	vmj	0x8E		; advance the Graphic Cursor Unit by one
-	vmj	0x8E		; column per call -- 6 calls total, matching
-	vmj	0x8E		; this ROM font's confirmed 5-column glyph +
-	vmj	0x8E		; 1-column inter-character gap cell width.
-	vmj	0x8E
-	vmj	0x8E
-lcdPutChar_full:
-	rtn
-
-	.area DATA
-lcdPutChar_c:
-	.ds 1
+	jmp	__lcd_draw

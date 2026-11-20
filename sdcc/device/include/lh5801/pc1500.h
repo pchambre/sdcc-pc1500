@@ -39,19 +39,26 @@
 #ifndef __PC1500_H
 #define __PC1500_H   1
 
-/* --- LCD (device/lib/lh5801/lcd_putchar.asm, lcd_clear.asm) ----------
-   VMJ 0x8A/0x8C/0x8E (SBR8A/SBR8C/SBR8E) print one character at the
-   current Graphic Cursor Unit position and advance it; VMJ 0xF2 (SBRF2)
-   clears the display. lcdClear() also resets the GCU itself (0x7875),
-   since SBRF2 alone does not. */
+/* --- LCD (device/lib/lh5801/lcd_putchar.asm, lcd_draw.asm, lcd_clear.asm)
+   lcdPutChar() prints one character at the current Graphic Cursor Unit
+   position and advances it a cell, in the ROM's own font (VMJ 0x8C/0x8A,
+   SBR8C/SBR8A); VMJ 0xF2 (SBRF2) clears the display. lcdClear() also
+   resets the GCU itself (0x7875), since SBRF2 alone does not.
+
+   ASCII prints as ASCII: the ROM's font has no ', [ or ] -- its 27H is a
+   box, 5BH a square root and 5DH pi -- so lcdPutChar() draws those three
+   itself. For the ROM's own three, print PC1500_CHAR_BOX, _SQRT or _PI. */
 extern void lcdPutChar(unsigned char c);
 extern void lcdClear(void);
+#define PC1500_CHAR_BOX  0xA7   /* the ROM's 27H: an empty box */
+#define PC1500_CHAR_SQRT 0xDB   /* its 5BH: a square root */
+#define PC1500_CHAR_PI   0xDD   /* its 5DH: pi */
 
 /* The Graphic Cursor Unit itself: the raw column (0-155) the next
    lcdPutChar() draws at. */
 #define PC1500_GCU (*(volatile unsigned char *)0x7875)
 
-/* --- More LCD (device/lib/lh5801/lcd_cursor.asm, lcd_string.c) ---------
+/* --- More LCD (device/lib/lh5801/lcd_cursor.asm, lcd_puts.asm) ----------
    lcdSetCursor() is BASIC's CURSOR: character cell 0-25, 6 columns each.
    lcdInvert() inverts every dot on the display (the Technical Reference
    Manual's own "display reverse" routine); calling it again restores it.
@@ -74,12 +81,29 @@ extern unsigned char keyScan(void);
 #define PC1500_KEY_DOWN  0x0A
 #define PC1500_KEY_BREAK 0x0E  /* keyWait() only; not a key-table code */
 
-/* BASIC-INPUT-style line entry (device/lib/lh5801/lcd_string.c), echoed
+/* BASIC-INPUT-style line entry (device/lib/lh5801/lcd_input.asm), echoed
    from the current cursor: up to max characters (buf needs max + 1),
    CL clears, ENTER ends. Returns the length -- 0 for a bare ENTER, which
    is how INPUT keeps a default -- or PC1500_INPUT_BREAK for BREAK. */
 extern unsigned char lcdInputLine(char *buf, unsigned char max);
 #define PC1500_INPUT_BREAK 0xFF
+
+/* --- The expansion module (build-lh5801.sh --expansion) ---------------
+   Built with --expansion (which also defines PC1500_EXPANSION), the
+   library works with what the PC-1500 SD/BLE expansion module adds:
+   - its Screen pane (MCONF BLDISP) shows the program's display as it
+     shows BASIC's: lcdPutChar() and lcdClear() keep BASIC's text buffers
+     as the LCD shows them, and the pane reads those off the bus;
+   - keyScan() also reads its external (Bluetooth) keyboard (MCONF
+     BLKBD), as keyWait() always does;
+   - keyWait() keeps the module's command history out of the program's
+     keys (ENTER, DEF+arrows).
+   lcdEditBegin() marks the display's line from then on as a line being
+   typed -- the pane shows it with its cursor, as BASIC's own input --
+   until lcdEditEnd(), which reports it as entered. lcdInputLine() does
+   both itself. Without --expansion they do nothing. */
+extern void lcdEditBegin(void);
+extern void lcdEditEnd(void);
 
 /* --- Ending the program (device/lib/lh5801/exit.asm) -------------------
    C's exit(), from any depth: back to BASIC's CALL, exactly as returning
