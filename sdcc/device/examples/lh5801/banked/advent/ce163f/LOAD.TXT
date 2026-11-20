@@ -1,0 +1,31 @@
+main: fixed code at &40C5, banked code for ce163f.
+Type each line at the prompt: NEW in PRO mode, the rest in RUN
+mode. A bank holding code can't hold a BASIC program: the one
+there is lost.
+
+The banks first, while BASIC's program is still in 0000H-3FFFH:
+  H=PEEK &E2
+  POKE &6804,0
+  CLOAD M "mainB4";&0112     (main-40C5-pc1500-b4.bin, 15489 bytes)
+  POKE &6803,0
+  CLOAD M "mainB3";&0112     (main-40C5-pc1500-b3.bin, 15348 bytes)
+  POKE &6800,0
+  CLOAD M "mainB0";&0112     (main-40C5-pc1500-b0.bin, 13241 bytes)
+  POKE &6801,0
+  CLOAD M "mainB1";&0112     (main-40C5-pc1500-b1.bin, 15844 bytes)
+  POKE &6802,0
+  CLOAD M "mainB2";&0112     (main-40C5-pc1500-b2.bin, 15916 bytes)
+  POKE &6800+H,0          (back to the BASIC bank)
+
+Then the fixed code:
+  NEW &567E
+  CLOAD M "main";&40C5      (main-40C5-pc1500.bin)
+  CALL &40C5
+
+Banks 9-15 are flash: load the image into a free RAM bank as
+above, then switch to that bank and copy it with the vendor's
+utilities, X= and CALL on separate lines:
+  X=<that RAM bank>
+  CALL &E3,X
+  X=<the flash bank>
+  CALL &C6,X

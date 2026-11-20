@@ -34,6 +34,10 @@ obj/
 *-pc1500.bin
 # and its SD-card copy (<BASENAME>.BIN, with the SDLOAD M header)
 /device/examples/lh5801/**/*.BIN
+# ...except the banked Adventure's prebuilt CE-163F/PC-1500A pieces, published
+# for those without the toolchain (2026-11-20)
+!/device/examples/lh5801/banked/advent/ce163f/*.BIN
+!/device/examples/lh5801/banked/advent/ce163f/*-pc1500.bin
 /src/sdcc
 /src/SDCClex.c
 /src/SDCCy.c
